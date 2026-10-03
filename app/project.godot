@@ -1,0 +1,33 @@
+; Engine configuration file.
+; Godot Co-op companion app (also hosts the relay server with --relay).
+
+config_version=5
+
+[application]
+
+config/name="Godot Co-op"
+config/description="Real-time collaboration for the Godot editor"
+run/main_scene="res://src/main.tscn"
+config/use_custom_user_dir=true
+config/custom_user_dir_name="GodotCoopApp"
+config/features=PackedStringArray("4.7", "GL Compatibility")
+run/low_processor_mode=true
+boot_splash/bg_color=Color(0.0784314, 0.0901961, 0.117647, 1)
+boot_splash/show_image=false
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1120
+window/size/viewport_height=740
+window/subwindows/embed_subwindows=false
+window/energy_saving/keep_screen_on=false
+
+[gui]
+
+theme/default_font_antialiasing=2
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"

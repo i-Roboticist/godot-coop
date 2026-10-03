@@ -1,0 +1,4 @@
+# Godot files use LF everywhere
+* text=auto eol=lf
+*.ico binary
+*.png binary

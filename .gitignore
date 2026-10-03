@@ -1,0 +1,12 @@
+# Godot
+.godot/
+*.translation
+# Godot Co-op per-project data
+.coop/
+# Build output
+dist/
+app/payload/
+__pycache__/
+
+# Installed into the demo by the app when hosting; the source of truth is app/addons/godot_coop
+examples/demo_game/addons/

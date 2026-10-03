@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join a Godot Co-op session</title>
+<meta name="description" content="Someone invited you to edit a Godot project together.">
+<style>
+  :root {
+    --bg: #14171e; --panel: #1c212b; --panel2: #232936; --border: #2c3342;
+    --text: #e8ebf1; --muted: #8d96a8; --accent: #4f8fdc; --accent2: #64a0e6;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6fa; --panel: #ffffff; --panel2: #eef1f6; --border: #d9dee8;
+    --text: #1b2130; --muted: #5d6679; --accent: #3a78c9; --accent2: #2f68b2;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6fa; --panel: #ffffff; --panel2: #eef1f6; --border: #d9dee8;
+      --text: #1b2130; --muted: #5d6679; --accent: #3a78c9; --accent2: #2f68b2;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg);
+         color: var(--text); font: 16px/1.5 "Segoe UI", Inter, Roboto, system-ui, sans-serif; padding: 16px; }
+  .card { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--border);
+          border-radius: 16px; padding: 28px; }
+  h1 { font-size: 26px; margin: 0 0 6px; }
+  p { color: var(--muted); margin: 0 0 18px; }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; font-weight: 650; }
+  .logo { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg, #4f8fdc, #2f5ea8);
+          display: grid; place-items: center; color: #fff; font-size: 18px; }
+  .btn { display: inline-block; border: 0; border-radius: 10px; padding: 12px 20px; font: inherit; font-weight: 650;
+         cursor: pointer; text-decoration: none; }
+  .primary { background: var(--accent); color: #fff; }
+  .primary:hover { background: var(--accent2); }
+  .ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  code { display: block; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
+         font: 13px/1.4 Consolas, "Cascadia Code", monospace; word-break: break-all; margin: 14px 0 4px; }
+  ol { color: var(--muted); padding-left: 20px; margin: 18px 0 0; }
+  .err { color: #ff6b6b; }
+  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel2);
+           border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; opacity: 0; transition: opacity .2s; }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+<main class="card">
+  <div class="brand"><div class="logo">&#9679;&#9679;</div>Godot Co-op</div>
+  <div id="ok" hidden>
+    <h1>You're invited to <span id="project">a Godot project</span></h1>
+    <p>Opening the Godot Co-op app… If nothing happens, you may not have it yet.</p>
+    <div class="row">
+      <a class="btn primary" id="open" href="#">Open in Godot Co-op</a>
+      <button class="btn ghost" id="copy">Copy invite code</button>
+    </div>
+    <code id="code"></code>
+    <ol>
+      <li>Install Godot Co-op (ask whoever sent this link where to get it).</li>
+      <li>Open it, choose <b>Join a session</b> and paste the invite code.</li>
+      <li>It downloads the project and the right Godot version, then opens it - you're in.</li>
+    </ol>
+  </div>
+  <div id="bad" hidden>
+    <h1>No invite here</h1>
+    <p class="err">This link doesn't contain a Godot Co-op invite code. Ask the host to copy the link again.</p>
+  </div>
+</main>
+<div class="toast" id="toast">Invite code copied</div>
+<script>
+  // The code lives in the URL fragment (#…), which browsers never send to this web server.
+  const raw = decodeURIComponent((location.hash || "").replace(/^#/, "") || new URLSearchParams(location.search).get("c") || "");
+  const m = raw.match(/gdc1\.[A-Za-z0-9_-]+/);
+  if (!m) {
+    document.getElementById("bad").hidden = false;
+  } else {
+    const code = m[0];
+    const link = "godotcoop://join/" + code;
+    document.getElementById("ok").hidden = false;
+    document.getElementById("code").textContent = code;
+    document.getElementById("open").href = link;
+    try {
+      // Bytes after "gdc1." are base64url; the project name is the last length-prefixed string.
+      const b64 = code.slice(5).replace(/-/g, "+").replace(/_/g, "/");
+      const bytes = Uint8Array.from(atob(b64 + "===".slice((b64.length + 3) % 4)), c => c.charCodeAt(0));
+      let i = 1 + 6 + 16 + 1;
+      const n = bytes[i++];
+      for (let k = 0; k < n; k++) { i += 1; i += 1 + bytes[i]; i += 2; }
+      const readStr = () => { const len = bytes[i++]; const s = new TextDecoder().decode(bytes.slice(i, i + len)); i += len; return s; };
+      readStr(); i += 2; readStr();
+      const project = readStr();
+      if (project) document.getElementById("project").textContent = project;
+    } catch (e) { /* the name is only cosmetic */ }
+    document.getElementById("copy").onclick = async () => {
+      try { await navigator.clipboard.writeText(code); } catch (e) {}
+      const t = document.getElementById("toast"); t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1800);
+    };
+    setTimeout(() => { location.href = link; }, 400);
+  }
+</script>
+</body>
+</html>
