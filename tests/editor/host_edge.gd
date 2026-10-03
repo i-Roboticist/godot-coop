@@ -155,8 +155,62 @@ func start(plugin) -> void:
 	check("reload_keeps_unsaved_live_edit", reloaded and ok, str(scene_root("res://main.tscn").get_node("Player").position) if scene_root("res://main.tscn") else "no scene")
 
 	mark("host_scenes_done")
+
+	# --- Assets dropped into the FileSystem dock ------------------------------------------------
+	log_file_events()
+	# (Shorter than the real minute, so a side file nobody else sends is shared within the test.)
+	P.session.files.side_wait_ms = 8000
+	var copies_before: int = P.session.files.conflict_backups.size()
+	# A1. The client drops a PNG into a new folder: it arrives here imported, with the same import
+	#     file (settings and UID) the client's editor made.
+	await wait_mark("client_dropped_png")
+	ok = await until(func(): return FileAccess.file_exists("res://art/dropped/client.png.import") and ResourceLoader.exists("res://art/dropped/client.png"), 25)
+	check("dropped_png_arrives_imported", ok)
+	await wait(4.0)
+	write_shared("host_client_png.txt", FileAccess.get_file_as_string("res://art/dropped/client.png.import"))
+	mark("host_settled_client_png")
+	await wait_mark("client_settled_client_png")
+	check("dropped_png_same_import_file", read_shared("host_client_png.txt") == read_shared("client_client_png.txt") and read_shared("host_client_png.txt").contains("uid="),
+		"host: %s / client: %s" % [_uid_line(read_shared("host_client_png.txt")), _uid_line(read_shared("client_client_png.txt"))])
+
+	# A2. We drop one: same on the client.
+	await drop_png("res://art/host_drop.png", Color.RED)
+	await until(func(): return FileAccess.file_exists("res://art/host_drop.png.import"), 25)
+	mark("host_dropped_png")
+	await wait_mark("client_got_host_png")
+	await wait(4.0)
+	write_shared("host_host_png.txt", FileAccess.get_file_as_string("res://art/host_drop.png.import"))
+	mark("host_settled_host_png")
+
+	# A3. The client moves its PNG to another folder.
+	await wait_mark("client_moved_png")
+	ok = await until(func(): return not FileAccess.file_exists("res://art/dropped/client.png") and FileAccess.file_exists("res://art/moved/client.png") and ResourceLoader.exists("res://art/moved/client.png"), 25)
+	check("moved_png_follows", ok, str(DirAccess.get_files_at("res://art/moved")) if DirAccess.dir_exists_absolute("res://art/moved") else "no folder")
+	await wait(4.0)
+	check("moved_png_keeps_uid", _uid_line(FileAccess.get_file_as_string("res://art/moved/client.png.import")) == _uid_line(read_shared("host_client_png.txt")))
+
+	# A4. The client drops a script: Godot gives it a .uid, and both editors must agree on it.
+	await wait_mark("client_dropped_script")
+	ok = await until(func(): return FileAccess.file_exists("res://dropped/helper.gd") and FileAccess.file_exists("res://dropped/helper.gd.uid"), 25)
+	check("dropped_script_and_uid_arrive", ok)
+	await wait(11.0)
+	write_shared("host_helper_uid.txt", FileAccess.get_file_as_string("res://dropped/helper.gd.uid"))
+	mark("host_settled_script")
+	await wait_mark("client_settled_script")
+	check("dropped_script_same_uid", read_shared("host_helper_uid.txt") == read_shared("client_helper_uid.txt") and read_shared("host_helper_uid.txt").begins_with("uid://"),
+		"host %s / client %s" % [read_shared("host_helper_uid.txt").strip_edges(), read_shared("client_helper_uid.txt").strip_edges()])
+	check("no_conflict_copies_for_assets", P.session.files.conflict_backups.size() == copies_before, str(P.session.files.conflict_backups.slice(copies_before)))
+	mark("host_assets_done")
+
 	await wait_mark("client_done", 120)
 	await finish()
+
+
+func _uid_line(import_text: String) -> String:
+	for line in import_text.split("\n"):
+		if line.begins_with("uid="):
+			return line
+	return "(no uid)"
 
 
 func _wall_is_area(main: Node) -> bool:

@@ -205,5 +205,54 @@ func start(plugin) -> void:
 	mark("client_saved_gem")
 
 	await wait_mark("host_scenes_done", 90)
+
+	# --- Assets dropped into the FileSystem dock ------------------------------------------------
+	log_file_events()
+	P.session.files.side_wait_ms = 8000
+	var copies_before: int = P.session.files.conflict_backups.size()
+	# A1. Drop a PNG into a new folder.
+	await drop_png("res://art/dropped/client.png", Color.GREEN)
+	ok = await until(func(): return FileAccess.file_exists("res://art/dropped/client.png.import"), 25)
+	check("dropped_png_imported_here", ok)
+	mark("client_dropped_png")
+	await wait_mark("host_settled_client_png")
+	write_shared("client_client_png.txt", FileAccess.get_file_as_string("res://art/dropped/client.png.import"))
+	mark("client_settled_client_png")
+
+	# A2. The host drops one: it arrives here imported, with the host's import file.
+	await wait_mark("host_dropped_png")
+	ok = await until(func(): return FileAccess.file_exists("res://art/host_drop.png.import") and ResourceLoader.exists("res://art/host_drop.png"), 25)
+	check("host_png_arrives_imported", ok)
+	mark("client_got_host_png")
+	await wait_mark("host_settled_host_png")
+	check("host_png_same_import_file", FileAccess.get_file_as_string("res://art/host_drop.png.import") == read_shared("host_host_png.txt"))
+
+	# A3. Move our PNG to another folder (with its import file, as the FileSystem dock does).
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://art/moved"))
+	for suffix in ["", ".import", ".uid"]:
+		var from := ProjectSettings.globalize_path("res://art/dropped/client.png" + suffix)
+		if FileAccess.file_exists(from):
+			DirAccess.rename_absolute(from, ProjectSettings.globalize_path("res://art/moved/client.png" + suffix))
+	await rescan()
+	mark("client_moved_png")
+
+	# A4. Drop a script.
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path("res://dropped"))
+	var sf := FileAccess.open("res://dropped/helper.gd", FileAccess.WRITE)
+	sf.store_string("extends Node\n\nfunc helper() -> int:\n\treturn 42\n")
+	sf.close()
+	await rescan()
+	EditorInterface.get_resource_filesystem().update_file("res://dropped/helper.gd")
+	# Whether this editor makes the .uid itself depends on Godot; either way both must agree.
+	ok = await until(func(): return FileAccess.file_exists("res://dropped/helper.gd.uid"), 6)
+	say("this editor made the script's .uid itself: %s" % ok)
+	mark("client_dropped_script")
+	await wait_mark("host_settled_script")
+	await until(func(): return FileAccess.file_exists("res://dropped/helper.gd.uid"), 10)
+	write_shared("client_helper_uid.txt", FileAccess.get_file_as_string("res://dropped/helper.gd.uid"))
+	mark("client_settled_script")
+	await wait_mark("host_assets_done", 60)
+	check("no_conflict_copies_for_assets_here", P.session.files.conflict_backups.size() == copies_before, str(P.session.files.conflict_backups.slice(copies_before)))
+
 	await finish()
 

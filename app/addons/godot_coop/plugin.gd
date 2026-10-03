@@ -35,6 +35,7 @@ var live := false                    # live modules (scenes/scripts/presence) ru
 var _editor_dock = null
 var _menus: Array = []
 var _fs_scan_at := 0
+var _fs_scan_needed := false
 var _changed_scenes := {}
 var _status_at := 0
 var _refresh_due := false
@@ -473,11 +474,16 @@ func _process(_delta: float) -> void:
 		playtest.process()
 	if _fs_scan_at > 0 and Util.now_ms() >= _fs_scan_at:
 		_fs_scan_at = 0
-		var fs := EditorInterface.get_resource_filesystem()
-		if not fs.is_scanning():
-			fs.scan()
+		_fs_scan_needed = true
 		scene_sync.retry_failed()
 		_refresh_instancing_scenes()
+	if _fs_scan_needed:
+		# Godot ignores a rescan request while one is running, so wait for it to finish: otherwise
+		# files that just arrived wouldn't be imported until something else triggered a scan.
+		var fs := EditorInterface.get_resource_filesystem()
+		if not fs.is_scanning():
+			_fs_scan_needed = false
+			fs.scan()
 	if _refresh_due:
 		_refresh_due = false
 		dock.refresh()

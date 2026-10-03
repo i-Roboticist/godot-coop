@@ -183,3 +183,30 @@ func ordered_names(n: Node) -> Array:
 	for c in n.get_children():
 		out.append(String(c.name))
 	return out
+
+
+## What dropping an image onto the FileSystem dock does: copy it into the project, then rescan
+## (which imports it and writes its .import file).
+func drop_png(path: String, color: Color) -> void:
+	DirAccess.make_dir_recursive_absolute(ProjectSettings.globalize_path(path.get_base_dir()))
+	var img := Image.create(16, 16, false, Image.FORMAT_RGBA8)
+	img.fill(color)
+	img.save_png(ProjectSettings.globalize_path(path))
+	rescan()
+
+
+## Asks Godot to rescan the project the way dropping files on the FileSystem dock does. (A request
+## made while a scan is running is ignored, so it waits for that one to finish first.)
+func rescan() -> void:
+	var fs := EditorInterface.get_resource_filesystem()
+	var end := Time.get_ticks_msec() + 10000
+	while fs.is_scanning() and Time.get_ticks_msec() < end:
+		await P.get_tree().process_frame
+	fs.scan()
+
+
+## Logs every file the sync sends, receives or deletes (for diagnosing asset tests).
+func log_file_events() -> void:
+	var f = P.session.files
+	f.file_applied.connect(func(rel, by, deleted): say("applied %s from %d%s" % [rel, by, " (deleted)" if deleted else ""]))
+	f.local_change.connect(func(rel, deleted): say("local %s %s" % ["delete" if deleted else "change", rel]))

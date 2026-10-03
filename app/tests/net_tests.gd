@@ -216,6 +216,28 @@ func _init() -> void:
 	pump(4000)
 	check(read(host_dir, "case.txt") == "case test" and read(ed2_dir, "case.txt") == "case test", "case-only rename keeps the file (%s)" % str(DirAccess.get_files_at(host_dir)))
 
+	# An asset arrives and the joiner's Godot imports it before the sender's .import does: the
+	# joiner's own .import (another UID) isn't sent, and the sender's replaces it, with no conflict
+	# copies anywhere.
+	var copies0 := host.files.conflict_backups.size() + ed2.files.conflict_backups.size()
+	write(host_dir, "art/side.png", "PNG DATA")
+	check(pump(5000, func(): return read(ed2_dir, "art/side.png") == "PNG DATA"), "asset arrives")
+	write(ed2_dir, "art/side.png.import", "uid=\"uid://made_by_ed2\"\n")
+	ed2.files.check_path("art/side.png.import")
+	pump(1500)
+	check(not FileAccess.file_exists(host_dir.path_join("art/side.png.import")), "the joiner's own .import isn't sent")
+	write(host_dir, "art/side.png.import", "uid=\"uid://made_by_host\"\n")
+	check(pump(5000, func(): return read(ed2_dir, "art/side.png.import").contains("made_by_host")), "the sender's .import replaces it")
+	pump(1500)
+	check(read(host_dir, "art/side.png.import").contains("made_by_host") and host.files.conflict_backups.size() + ed2.files.conflict_backups.size() == copies0, "and nothing bounces back or makes conflict copies")
+	# If the sender never sends one (it has no .import for that file), ours goes out after a while.
+	ed2.files.side_wait_ms = 300
+	write(host_dir, "art/plain.dat", "data")
+	check(pump(5000, func(): return read(ed2_dir, "art/plain.dat") == "data"), "file without side files arrives")
+	write(ed2_dir, "art/plain.dat.import", "uid=\"uid://only_ed2\"\n")
+	check(pump(6000, func(): return read(host_dir, "art/plain.dat.import").contains("only_ed2")), "an unanswered .import is sent after the wait")
+	ed2.files.side_wait_ms = 60000
+
 	# Deleting a dotfile reaches joiners (hidden files count when checking the exact name).
 	write(host_dir, ".hidden_test", "x")
 	check(pump(5000, func(): return read(ed2_dir, ".hidden_test") == "x"), "dotfile arrives")
