@@ -3,13 +3,17 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 ADDON = REPO / "app" / "addons" / "godot_coop"
 DEMO = REPO / "examples" / "demo_game"
-GODOT = Path(os.environ.get("GODOT", r"C:\Users\djdan\Downloads\Godot_v4.7.2-stable_win64\Godot_v4.7.2-stable_win64_console.exe"))
+sys.path.insert(0, str(REPO))
+from build import find_godot  # noqa: E402  (honours the GODOT environment variable)
+
+GODOT = Path(find_godot())
 
 
 def install_addon(project: Path) -> None:

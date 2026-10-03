@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="360" viewBox="0 0 1280 360">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1f3a"/>
+      <stop offset="0.55" stop-color="#1253b5"/>
+      <stop offset="1" stop-color="#7a3cf0"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.82" cy="0.2" r="0.55">
+      <stop offset="0" stop-color="#4fb3ff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#4fb3ff" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="card"><rect width="1280" height="360" rx="24"/></clipPath>
+    <style>
+      .t { font-family: "Segoe UI", "Helvetica Neue", Arial, sans-serif; }
+    </style>
+  </defs>
+  <g clip-path="url(#card)">
+    <rect width="1280" height="360" fill="url(#bg)"/>
+    <rect width="1280" height="360" fill="url(#glow)"/>
+    <g fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2">
+      <circle cx="1050" cy="120" r="110"/>
+      <circle cx="1050" cy="120" r="170"/>
+      <circle cx="1050" cy="120" r="240"/>
+    </g>
+    <!-- a faint code editor behind the text -->
+    <g class="t" font-family="Consolas, 'Cascadia Code', monospace" font-size="17" fill="#ffffff" fill-opacity="0.13">
+      <text x="760" y="246">func _physics_process(delta):</text>
+      <text x="792" y="274">velocity = input * speed</text>
+      <text x="792" y="302">move_and_slide()</text>
+    </g>
+  </g>
+
+  <!-- logo -->
+  <g transform="translate(88 92)">
+    <rect width="96" height="96" rx="22" fill="#0a2135"/>
+    <rect x="0.75" y="0.75" width="94.5" height="94.5" rx="21.25" fill="none" stroke="#4fb3ff" stroke-opacity="0.45" stroke-width="1.5"/>
+    <g transform="scale(0.75)">
+      <path d="M64.6 46.6A23 23 0 1 0 64.6 81.4" fill="none" stroke="#4fb3ff" stroke-width="11" stroke-linecap="round"/>
+      <circle cx="88" cy="71" r="13.5" fill="none" stroke="#4fb3ff" stroke-width="10"/>
+    </g>
+  </g>
+
+  <text class="t" x="88" y="252" font-size="64" font-weight="700" fill="#ffffff">Godot Co-op</text>
+  <text class="t" x="90" y="296" font-size="24" fill="#dbe7ff">Edit the same Godot project together, live.</text>
+
+  <!-- two collaborators' cursors -->
+  <g transform="translate(860 118)">
+    <path d="M0 0 L0 26 L7 19 L12 30 L17 28 L12 17 L22 17 Z" fill="#ff6b6b" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
+    <rect x="18" y="28" width="66" height="26" rx="6" fill="#ff6b6b"/>
+    <text class="t" x="51" y="46" font-size="15" font-weight="700" fill="#ffffff" text-anchor="middle">Hana</text>
+  </g>
+  <g transform="translate(1088 214)">
+    <path d="M0 0 L0 26 L7 19 L12 30 L17 28 L12 17 L22 17 Z" fill="#4dabf7" stroke="#ffffff" stroke-width="1.5" stroke-linejoin="round"/>
+    <rect x="18" y="28" width="60" height="26" rx="6" fill="#4dabf7"/>
+    <text class="t" x="48" y="46" font-size="15" font-weight="700" fill="#ffffff" text-anchor="middle">Cole</text>
+  </g>
+</svg>

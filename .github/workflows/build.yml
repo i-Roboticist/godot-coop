@@ -1,0 +1,132 @@
+# Tests every push. Pushing a tag like v1.2.0 also builds the Windows app, signs it through
+# SignPath once that's configured (see README, "Code signing policy"), and publishes a release.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7.2"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Cache Godot
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}\godot
+          key: godot-${{ env.GODOT_VERSION }}-stable-win64-templates
+
+      - name: Download Godot and the Windows export templates
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $ProgressPreference = "SilentlyContinue"
+          $tag = "$env:GODOT_VERSION-stable"
+          $base = "https://github.com/godotengine/godot-builds/releases/download/$tag"
+          $dir = "$env:RUNNER_TEMP\godot"
+          Invoke-WebRequest "$base/Godot_v${tag}_win64.exe.zip" -OutFile godot.zip
+          7z x godot.zip "-o$dir\editor" -y | Out-Null
+          Invoke-WebRequest "$base/Godot_v${tag}_export_templates.tpz" -OutFile templates.zip
+          7z x templates.zip "templates/windows_*" "templates/version.txt" "-o$dir" -y | Out-Null
+          Remove-Item godot.zip, templates.zip
+
+      - name: Set up Godot
+        shell: pwsh
+        run: |
+          $dir = "$env:RUNNER_TEMP\godot"
+          $dest = "$env:APPDATA\Godot\export_templates\$env:GODOT_VERSION.stable"
+          New-Item -ItemType Directory -Force $dest | Out-Null
+          Copy-Item "$dir\templates\*" $dest
+          $godot = (Get-ChildItem "$dir\editor" -Filter "*_console.exe" -Recurse | Select-Object -First 1).FullName
+          "GODOT=$godot" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Import the app project
+        run: '& $env:GODOT --headless --editor --quit --path app'
+
+      - name: Unit tests
+        run: '& $env:GODOT --headless --path app -s res://tests/unit_tests.gd'
+
+      - name: App tests
+        run: '& $env:GODOT --headless --path app -s res://tests/app_tests.gd'
+
+      - name: Network tests
+        run: '& $env:GODOT --headless --path app -s res://tests/net_tests.gd'
+
+      - name: Two-editor tests
+        run: python tests/editor/run_editor_tests.py
+
+      - name: Build the app
+        run: python build.py
+
+      - name: Upload the unsigned build
+        id: upload-unsigned
+        uses: actions/upload-artifact@v4
+        with:
+          name: GodotCoop-windows-unsigned
+          path: dist/GodotCoop/
+          if-no-files-found: error
+
+      - name: Sign with SignPath
+        if: startsWith(github.ref, 'refs/tags/v') && vars.SIGNPATH_ORGANIZATION_ID != ''
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG || 'godot-coop' }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG || 'release-signing' }}
+          github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: dist/signed
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $src = if (Test-Path dist/signed) { "dist/signed" } else { "dist/GodotCoop" }
+          New-Item -ItemType Directory -Force package/GodotCoop, release | Out-Null
+          Copy-Item "$src/*" package/GodotCoop -Recurse
+          Compress-Archive package/GodotCoop release/GodotCoop-windows.zip
+          Copy-Item dist/godot_coop_plugin.zip release/
+          Get-AuthenticodeSignature package/GodotCoop/GodotCoop.exe | Format-List Status, SignerCertificate
+
+      - name: Upload release files
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-files
+          path: release/
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-files
+          path: release
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          notes="docs/releases/$tag.md"
+          if [ -f "$notes" ]; then how=(--notes-file "$notes"); else how=(--generate-notes); fi
+          gh release create "$tag" release/* --title "Godot Co-op ${tag#v}" "${how[@]}"

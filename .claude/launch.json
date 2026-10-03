@@ -6,6 +6,12 @@
       "runtimeExecutable": "python",
       "runtimeArgs": ["-m", "http.server", "8765", "--directory", "web"],
       "port": 8765
+    },
+    {
+      "name": "repo-files",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8766"],
+      "port": 8766
     }
   ]
 }

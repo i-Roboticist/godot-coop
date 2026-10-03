@@ -41,6 +41,7 @@
          font: 12.5px/1.45 Consolas, "Cascadia Code", "Source Code Pro", monospace; word-break: break-all; margin: 18px 0 0; color: var(--muted); }
   ol { color: var(--muted); padding-left: 20px; margin: 20px 0 0; }
   li { margin: 4px 0; }
+  li a { color: var(--accent); }
   .err { color: #e34850; }
   .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #323232; color: #f2f2f2;
            border-radius: 8px; padding: 10px 18px; opacity: 0; transition: opacity .2s; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
@@ -52,14 +53,15 @@
   <div class="brand"><div class="logo">Co</div>Godot Co-op</div>
   <div id="ok" hidden>
     <h1>You're invited to <span id="project">a Godot project</span></h1>
-    <p>Opening the Godot Co-op app… If nothing happens, you may not have it yet.</p>
+    <p>Opening the Godot Co-op app… If nothing happens, you may not have it yet. It's free.</p>
     <div class="row">
       <a class="btn primary" id="open" href="#">Open in Godot Co-op</a>
       <button class="btn ghost" id="copy">Copy invite code</button>
+      <a class="btn ghost" href="https://github.com/i-Roboticist/godot-coop/releases/latest/download/GodotCoop-windows.zip">Get Godot Co-op</a>
     </div>
     <code id="code"></code>
     <ol>
-      <li>Install Godot Co-op (ask whoever sent this link where to get it).</li>
+      <li><a href="https://github.com/i-Roboticist/godot-coop#readme">Download Godot Co-op</a>, unzip it and run <b>GodotCoop.exe</b>.</li>
       <li>Open it, choose <b>Join a session</b> and paste the invite code.</li>
       <li>It downloads the project and the right Godot version, then opens it. You're in.</li>
     </ol>

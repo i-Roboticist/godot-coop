@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="320" height="64" viewBox="0 0 320 64">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#378ef0"/>
+      <stop offset="1" stop-color="#1473e6"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="316" height="60" rx="30" fill="url(#g)"/>
+  <rect x="2.5" y="2.5" width="315" height="59" rx="29.5" fill="none" stroke="#ffffff" stroke-opacity="0.25"/>
+  <g transform="translate(38 20)" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M12 2v15"/>
+    <path d="M5.5 11l6.5 6.5L18.5 11"/>
+    <path d="M3 23h18"/>
+  </g>
+  <text x="72" y="40" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif" font-size="21" font-weight="700" fill="#ffffff">Download for Windows</text>
+</svg>
