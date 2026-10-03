@@ -172,7 +172,7 @@ func follow(pid: int) -> void:
 	following = pid
 	_follow_scene = ""
 	_follow_script = ""
-	plugin.toast("Following %s - click in a viewport or press Follow again to stop." % _session().peer_name(pid), 0)
+	plugin.toast("Following %s. Click in a viewport or press Follow again to stop." % _session().peer_name(pid), 0)
 	_apply_follow()
 	plugin.refresh_ui()
 
@@ -486,7 +486,7 @@ func _draw_lock_banner(ov: Control, tr) -> void:
 	var s = _session()
 	var mine: bool = tr.lock_holder == s.my_pid
 	var col: Color = s.peer_color(tr.lock_holder)
-	var text := "Locked by you - others can watch but not edit" if mine else "Locked by %s - you're watching live (Co-op dock → Request control)" % s.peer_name(tr.lock_holder)
+	var text := "Locked by you. Others can watch but not edit." if mine else "Locked by %s. You're watching live. Use Request control in the Co-op dock." % s.peer_name(tr.lock_holder)
 	var font := ov.get_theme_default_font()
 	var fs := int(13 * EditorInterface.get_editor_scale())
 	var w := font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x

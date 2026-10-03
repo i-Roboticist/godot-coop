@@ -281,7 +281,7 @@ func _on_state_changed(state: String, detail: String) -> void:
 	match state:
 		"reconnecting":
 			if live:
-				toast("Connection lost - reconnecting…", 1)
+				toast("Connection lost. Reconnecting…", 1)
 		"failed":
 			toast("Co-op: " + detail, 2)
 			_stop_live()
@@ -316,7 +316,7 @@ func _on_initial_sync_done(_summary: Dictionary) -> void:
 		_start_live()
 		session.send({"t": "proj_get"})
 		if not session.files.conflict_backups.is_empty():
-			toast("Some of your local edits conflicted with the host's - backups are in .coop/conflicts/.", 1)
+			toast("Some of your local edits conflicted with the host's. Backups are in .coop/conflicts/.", 1)
 	else:
 		scene_sync.session_resumed()
 		script_sync.session_resumed()
@@ -364,7 +364,7 @@ func _on_invites_changed() -> void:
 func _on_quarantine_changed() -> void:
 	var n: int = session.files.quarantine.size() if session != null and session.files != null else 0
 	if n > 0:
-		notify("%d incoming file(s) can run code in the editor - review them in the Co-op dock." % n, Color.ORANGE, Callable())
+		notify("%d incoming file(s) can run code in the editor. Review them in the Co-op dock." % n, Color.ORANGE, Callable())
 	refresh_ui()
 
 

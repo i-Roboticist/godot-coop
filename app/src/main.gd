@@ -17,6 +17,7 @@ const Installer := preload("res://src/installer.gd")
 const Installs := preload("res://src/godot_installs.gd")
 
 const APP_VERSION := "1.0.0"
+const LABEL_COLUMN := 230
 
 var installs: Node = null
 var profile := {}
@@ -25,15 +26,23 @@ var screen := ""
 var _page: VBoxContainer = null
 var _scroll: ScrollContainer = null
 var _nav := {}
+var _toast: PanelContainer = null
 var _toast_label: Label = null
 var _toast_until := 0
 var _refresh_at := 0
+var _status_chip: PanelContainer = null
+var _status_dot: Control = null
+var _status_text: Label = null
+var _avatar_slot: Control = null
+var _relay_footer: Label = null
+var _search: LineEdit = null
 
 # hosting
 var host_dir := ""
 var hosted := {}
 var _host_exe_pick: OptionButton = null
 var _host_status := {}
+var _status_sig := ""
 
 # joining
 var join_session = null
@@ -76,7 +85,7 @@ func _ready() -> void:
 		get_tree().quit(0 if err.is_empty() else 1)
 		return
 	theme = AppTheme.build()
-	get_window().min_size = Vector2i(880, 620)
+	get_window().min_size = Vector2i(960, 640)
 	get_window().title = "Godot Co-op"
 	profile = Util.load_profile()
 	Util.save_profile(profile)
@@ -122,12 +131,44 @@ func _screenshot(path: String, args: PackedStringArray) -> void:
 	var si := args.find("--screen")
 	if si != -1 and si + 1 < args.size():
 		show_screen(args[si + 1])
+	var di := args.find("--demo")
+	if di != -1 and di + 1 < args.size():
+		_demo_state(args[di + 1])
 	for i in 12:
 		await get_tree().process_frame
-	var tex := get_viewport().get_texture()
-	var img := tex.get_image()
-	var err := img.save_png(path)
+	var img := get_viewport().get_texture().get_image()
+	img.save_png(path)
 	get_tree().quit()
+
+
+## Developer aid for screenshots: fills a screen with sample data (--demo session|plan|downloading|done).
+func _demo_state(kind: String) -> void:
+	var fake := {"major": 4, "minor": 7, "patch": 2, "status": "stable", "dotnet": false}
+	match kind:
+		"session":
+			var d := OS.get_user_data_dir().path_join("demo_session")
+			Util.write_json(d.path_join(".coop/status.json"), {
+				"state": "hosting", "ready": true, "ts": Util.unix_time(), "short": "QD2J8QE5",
+				"invite": "gdc1.AdMpmZN26uE_Eo_xyTFvE1GyY8iH5fwAAQENMTkyLjE2OC44Ni4zM-q6AAAAAApTdGFyc2hpcCBBcmVuYQ",
+				"viewer_invite": "gdc1.x", "peers": [
+					{"name": "Hana", "color": "ff6b6b", "role": "owner", "online": true},
+					{"name": "Cole", "color": "4dabf7", "role": "editor", "online": true},
+					{"name": "Rio", "color": "51cf66", "role": "viewer", "online": false}]})
+			hosted = {"dir": d, "project": "Starship Arena", "pid": 0}
+			show_screen("session")
+		"plan", "downloading", "done":
+			join_session = Session.new()
+			join_session.host_info = {"project": "Starship Arena", "host_name": "Hana", "godot": fake,
+				"git": {"ok": true, "remote": "https://example.com/starship.git", "branch": "main", "head": "1a2b3c4d5e6f"}}
+			join_plan = {"count": 214, "total": 48230000, "risky": [
+				["addons/dialogue/plugin.cfg", "Editor plugin manifest (enables a plugin that runs inside the editor)"],
+				["tools/level_baker.gd", "@tool script (runs inside the editor)"]]}
+			join_dest = String(settings.projects_dir).path_join("Starship Arena")
+			join_done_bytes = 19400000
+			join_total_bytes = 48230000
+			join_current = "art/ship_hull.png"
+			join_state = kind
+			show_screen("join")
 
 
 func _load_settings() -> Dictionary:
@@ -148,94 +189,216 @@ func _save_settings() -> void:
 
 
 # ==================================================================================================
-# Layout & widgets
+# Layout
 
 func _build_layout() -> void:
 	var bg := Panel.new()
 	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	add_child(bg)
-	var root := HBoxContainer.new()
+	var root := VBoxContainer.new()
 	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	root.add_theme_constant_override("separation", 0)
 	add_child(root)
+
+	# Top app bar: brand, invite field, status, avatar.
+	var top := PanelContainer.new()
+	top.theme_type_variation = "TopBar"
+	root.add_child(top)
+	var th := HBoxContainer.new()
+	th.add_theme_constant_override("separation", 12)
+	top.add_child(th)
+	var left := HBoxContainer.new()
+	left.add_theme_constant_override("separation", 12)
+	left.custom_minimum_size.x = 300
+	left.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	th.add_child(left)
+	left.add_child(AppTheme.tile("Co", AppTheme.TILE_BLUE, 32))
+	var brand := Label.new()
+	brand.text = "Godot Co-op"
+	brand.theme_type_variation = "Brand"
+	left.add_child(brand)
+	var search := PanelContainer.new()
+	search.theme_type_variation = "Search"
+	search.custom_minimum_size = Vector2(440, 34)
+	th.add_child(search)
+	var sh := HBoxContainer.new()
+	sh.add_theme_constant_override("separation", 6)
+	search.add_child(sh)
+	var si := TextureRect.new()
+	si.texture = AppTheme.icon("search", 16, AppTheme.MUTED)
+	si.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	sh.add_child(si)
+	_search = LineEdit.new()
+	_search.theme_type_variation = "Flat"
+	_search.placeholder_text = "Paste an invite code or link to join"
+	_search.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_search.text_submitted.connect(_on_search_submitted)
+	sh.add_child(_search)
+	var right := HBoxContainer.new()
+	right.add_theme_constant_override("separation", 12)
+	right.custom_minimum_size.x = 300
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.alignment = BoxContainer.ALIGNMENT_END
+	th.add_child(right)
+	th = right
+	_status_chip = PanelContainer.new()
+	_status_chip.theme_type_variation = "Chip"
+	_status_chip.visible = false
+	_status_chip.mouse_filter = Control.MOUSE_FILTER_STOP
+	_status_chip.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_status_chip.gui_input.connect(_on_chip_input)
+	th.add_child(_status_chip)
+	var ch := HBoxContainer.new()
+	ch.add_theme_constant_override("separation", 7)
+	_status_chip.add_child(ch)
+	_status_dot = _dot(AppTheme.GOOD_TEXT, 8)
+	ch.add_child(_status_dot)
+	_status_text = Label.new()
+	_status_text.add_theme_font_override("font", AppTheme.semibold)
+	_status_text.add_theme_font_size_override("font_size", 13)
+	ch.add_child(_status_text)
+	_avatar_slot = Control.new()
+	_avatar_slot.custom_minimum_size = Vector2(32, 32)
+	_avatar_slot.mouse_filter = Control.MOUSE_FILTER_STOP
+	_avatar_slot.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_avatar_slot.gui_input.connect(_on_avatar_input)
+	th.add_child(_avatar_slot)
+	_refresh_avatar()
+
+	# Body: side navigation + scrolling page.
+	var body := HBoxContainer.new()
+	body.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	body.add_theme_constant_override("separation", 0)
+	root.add_child(body)
 	var side := PanelContainer.new()
 	side.theme_type_variation = "Sidebar"
-	side.custom_minimum_size.x = 220
-	root.add_child(side)
+	side.custom_minimum_size.x = 236
+	body.add_child(side)
 	var sv := VBoxContainer.new()
-	sv.add_theme_constant_override("separation", 4)
+	sv.add_theme_constant_override("separation", 2)
 	side.add_child(sv)
-	var brand := HBoxContainer.new()
-	brand.add_theme_constant_override("separation", 10)
-	sv.add_child(brand)
-	var logo := TextureRect.new()
-	logo.texture = load("res://icon.svg")
-	logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
-	logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
-	logo.custom_minimum_size = Vector2(36, 36)
-	brand.add_child(logo)
-	var bl := Label.new()
-	bl.text = "Godot Co-op"
-	bl.theme_type_variation = "Subheading"
-	brand.add_child(bl)
-	var spacer := Control.new()
-	spacer.custom_minimum_size.y = 18
-	sv.add_child(spacer)
 	var group := ButtonGroup.new()
-	for item in [["home", "Home"], ["host", "Host a project"], ["join", "Join a session"], ["session", "Hosting status"], ["versions", "Godot versions"], ["settings", "Settings"]]:
-		var b := Button.new()
-		b.text = item[1]
-		b.theme_type_variation = "Nav"
-		b.toggle_mode = true
-		b.button_group = group
-		b.alignment = HORIZONTAL_ALIGNMENT_LEFT
-		b.pressed.connect(show_screen.bind(item[0]))
-		sv.add_child(b)
-		_nav[item[0]] = b
+	_nav_section(sv, "COLLABORATE", false)
+	for item in [["home", "Home", "home"], ["host", "Host a project", "host"], ["join", "Join a session", "join"], ["session", "Live session", "live"]]:
+		_nav_item(sv, item, group)
+	_nav_section(sv, "MANAGE", true)
+	for item in [["versions", "Godot versions", "layers"], ["settings", "Settings", "settings"]]:
+		_nav_item(sv, item, group)
 	var fill := Control.new()
 	fill.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	sv.add_child(fill)
-	var me := HBoxContainer.new()
-	me.add_theme_constant_override("separation", 8)
-	sv.add_child(me)
-	me.add_child(_dot(Util.color_of(profile), 12))
-	var ml := Label.new()
-	ml.text = String(profile.get("name", ""))
-	ml.name = "MeLabel"
-	me.add_child(ml)
+	_relay_footer = Label.new()
+	_relay_footer.theme_type_variation = "Muted"
+	_relay_footer.visible = false
+	sv.add_child(_relay_footer)
 	var ver := Label.new()
-	ver.text = "v" + APP_VERSION
-	ver.theme_type_variation = "Muted"
+	ver.text = "Version " + APP_VERSION
+	ver.theme_type_variation = "Caps"
 	sv.add_child(ver)
-	var main := VBoxContainer.new()
-	main.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	root.add_child(main)
 	_scroll = ScrollContainer.new()
-	_scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
-	main.add_child(_scroll)
+	body.add_child(_scroll)
 	var margin := MarginContainer.new()
 	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	for side_name in ["left", "right", "top", "bottom"]:
-		margin.add_theme_constant_override("margin_" + side_name, 40 if side_name in ["left", "right"] else 34)
+	margin.add_theme_constant_override("margin_left", 40)
+	margin.add_theme_constant_override("margin_right", 40)
+	margin.add_theme_constant_override("margin_top", 30)
+	margin.add_theme_constant_override("margin_bottom", 40)
 	_scroll.add_child(margin)
 	_page = VBoxContainer.new()
-	_page.add_theme_constant_override("separation", 16)
+	_page.add_theme_constant_override("separation", 18)
 	_page.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	margin.add_child(_page)
-	_toast_label = Label.new()
-	_toast_label.visible = false
-	_toast_label.add_theme_stylebox_override("normal", AppTheme._box(Color("#2b3242"), 8, AppTheme.BORDER, 1, 10))
-	_toast_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	_toast_label.position.y -= 60
-	add_child(_toast_label)
 
+	# Toast
+	_toast = PanelContainer.new()
+	var tsb := AppTheme._box(Color("#323232"), 8, Color("#454545"), 1, 0)
+	tsb.content_margin_left = 14
+	tsb.content_margin_right = 18
+	tsb.content_margin_top = 10
+	tsb.content_margin_bottom = 10
+	tsb.shadow_color = Color(0, 0, 0, 0.45)
+	tsb.shadow_size = 12
+	_toast.add_theme_stylebox_override("panel", tsb)
+	_toast.visible = false
+	add_child(_toast)
+	var tr := HBoxContainer.new()
+	tr.add_theme_constant_override("separation", 10)
+	_toast.add_child(tr)
+	var ti := TextureRect.new()
+	ti.texture = AppTheme.icon("check", 18, AppTheme.GOOD_TEXT)
+	ti.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	tr.add_child(ti)
+	_toast_label = Label.new()
+	tr.add_child(_toast_label)
+
+
+func _nav_section(parent: Control, text: String, gap: bool) -> void:
+	if gap:
+		var s := Control.new()
+		s.custom_minimum_size.y = 16
+		parent.add_child(s)
+	var l := Label.new()
+	l.text = text
+	l.theme_type_variation = "Caps"
+	var m := MarginContainer.new()
+	m.add_theme_constant_override("margin_left", 12)
+	m.add_theme_constant_override("margin_bottom", 6)
+	m.add_child(l)
+	parent.add_child(m)
+
+
+func _nav_item(parent: Control, item: Array, group: ButtonGroup) -> void:
+	var b := Button.new()
+	b.text = item[1]
+	b.icon = AppTheme.icon(item[2], 20)
+	b.theme_type_variation = "Nav"
+	b.toggle_mode = true
+	b.button_group = group
+	b.alignment = HORIZONTAL_ALIGNMENT_LEFT
+	b.custom_minimum_size.y = 38
+	b.pressed.connect(show_screen.bind(item[0]))
+	parent.add_child(b)
+	_nav[item[0]] = b
+
+
+func _refresh_avatar() -> void:
+	for c in _avatar_slot.get_children():
+		c.queue_free()
+	var a := AppTheme.avatar(String(profile.get("name", "")), Util.color_of(profile), 32)
+	_avatar_slot.add_child(a)
+	_avatar_slot.tooltip_text = "%s · Settings" % profile.get("name", "")
+
+
+func _on_search_submitted(t: String) -> void:
+	if t.strip_edges().is_empty():
+		return
+	_search.clear()
+	_search.release_focus()
+	show_screen("join")
+	_start_join(t)
+
+
+func _on_avatar_input(e: InputEvent) -> void:
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		show_screen("settings")
+
+
+func _on_chip_input(e: InputEvent) -> void:
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		show_screen("session" if not hosted.is_empty() else "join")
+
+
+# ==================================================================================================
+# Widgets
 
 func _dot(color: Color, size := 10) -> Control:
 	var p := Panel.new()
 	p.add_theme_stylebox_override("panel", AppTheme._box(color, size, Color(0, 0, 0, 0), 0, 0))
 	p.custom_minimum_size = Vector2(size, size)
 	p.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	p.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return p
 
 
@@ -246,30 +409,25 @@ func _label(parent: Control, text: String, variation := "", wrap := false) -> La
 		l.theme_type_variation = variation
 	if wrap:
 		l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-		l.custom_minimum_size.x = 200
+		l.custom_minimum_size.x = 160
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(l)
 	return l
 
 
-func _btn(parent: Control, text: String, cb: Callable, primary := false) -> Button:
+## kind: "" (outline), "Primary", "Quiet", "Link", "OnColor", "OnColorOutline".
+func _btn(parent: Control, text: String, cb: Callable, kind := "", icon := "") -> Button:
 	var b := Button.new()
 	b.text = text
-	if primary:
-		b.theme_type_variation = "Primary"
+	if not kind.is_empty():
+		b.theme_type_variation = kind
+	if not icon.is_empty():
+		b.icon = AppTheme.icon(icon, 18)
+	b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	b.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	b.pressed.connect(cb)
 	parent.add_child(b)
 	return b
-
-
-func _card(parent: Control, flat := false) -> VBoxContainer:
-	var pc := PanelContainer.new()
-	pc.theme_type_variation = "CardFlat" if flat else "Card"
-	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	parent.add_child(pc)
-	var v := VBoxContainer.new()
-	v.add_theme_constant_override("separation", 12)
-	pc.add_child(v)
-	return v
 
 
 func _hrow(parent: Control, sep := 10) -> HBoxContainer:
@@ -279,46 +437,134 @@ func _hrow(parent: Control, sep := 10) -> HBoxContainer:
 	return h
 
 
+func _spacer(parent: Control) -> void:
+	var c := Control.new()
+	c.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(c)
+
+
+## A card with an optional title line; returns the content box.
+func _card(parent: Control, title := "", variation := "Card") -> VBoxContainer:
+	var pc := PanelContainer.new()
+	pc.theme_type_variation = variation
+	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(pc)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 14)
+	pc.add_child(v)
+	if not title.is_empty():
+		_label(v, title, "Heading")
+	return v
+
+
+func _hover(panel: PanelContainer, normal: String, hover: String) -> void:
+	panel.mouse_entered.connect(func(): panel.theme_type_variation = hover)
+	panel.mouse_exited.connect(func(): panel.theme_type_variation = normal)
+
+
 func _line(parent: Control, text: String, placeholder: String, cb := Callable()) -> LineEdit:
 	var e := LineEdit.new()
 	e.text = text
 	e.placeholder_text = placeholder
 	e.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	e.custom_minimum_size.y = 34
 	if cb.is_valid():
 		e.text_changed.connect(cb)
 	parent.add_child(e)
 	return e
 
 
-func _kv(parent: Control, key: String, value: String, color := AppTheme.TEXT) -> Label:
-	var h := _hrow(parent)
-	var k := Label.new()
-	k.text = key
-	k.theme_type_variation = "Muted"
-	k.custom_minimum_size.x = 160
-	h.add_child(k)
-	var v := Label.new()
-	v.text = value
+## Label column + control column, Spectrum form style. Returns the control column.
+func _form_row(parent: Control, label: String, help := "") -> HBoxContainer:
+	var h := _hrow(parent, 16)
+	var lv := VBoxContainer.new()
+	lv.custom_minimum_size.x = LABEL_COLUMN
+	lv.add_theme_constant_override("separation", 2)
+	h.add_child(lv)
+	var l := _label(lv, label, "Body")
+	l.add_theme_color_override("font_color", AppTheme.MUTED)
+	if not help.is_empty():
+		var hl := _label(lv, help, "Muted", true)
+		hl.add_theme_color_override("font_color", AppTheme.FAINT)
+		hl.add_theme_font_size_override("font_size", 12)
+	var right := HBoxContainer.new()
+	right.add_theme_constant_override("separation", 10)
+	right.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	right.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+	h.add_child(right)
+	return right
+
+
+func _detail(parent: Control, key: String, value: String, color := AppTheme.TEXT) -> Label:
+	var r := _form_row(parent, key)
+	var v := _label(r, value, "", true)
 	v.add_theme_color_override("font_color", color)
-	v.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	h.add_child(v)
 	return v
+
+
+func _switch(parent: Control, text: String, on: bool, cb: Callable) -> CheckButton:
+	var row := _hrow(parent, 10)
+	row.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var s := CheckButton.new()
+	s.button_pressed = on
+	s.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	s.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	s.toggled.connect(cb)
+	row.add_child(s)
+	var l := _label(row, text, "Body", true)
+	l.mouse_filter = Control.MOUSE_FILTER_STOP
+	l.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	l.gui_input.connect(_on_switch_label_input.bind(s))
+	return s
+
+
+func _on_switch_label_input(e: InputEvent, s: CheckButton) -> void:
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		s.button_pressed = not s.button_pressed
+
+
+func _icon_rect(name: String, size: int, color: Color) -> TextureRect:
+	var t := TextureRect.new()
+	t.texture = AppTheme.icon(name, size, color)
+	t.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	t.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	return t
+
+
+func _progress(parent: Control, value: float, max_value: float, indeterminate := false) -> ProgressBar:
+	var pb := ProgressBar.new()
+	pb.custom_minimum_size.y = 6
+	pb.show_percentage = false
+	pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pb.max_value = max(1.0, max_value)
+	pb.value = value
+	pb.indeterminate = indeterminate
+	parent.add_child(pb)
+	return pb
+
+
+func _initials(name: String) -> String:
+	var words := name.strip_edges().replace("_", " ").split(" ", false)
+	if words.is_empty():
+		return "?"
+	if words.size() == 1:
+		return words[0].substr(0, 2).capitalize()
+	return (words[0].substr(0, 1) + words[1].substr(0, 1)).to_upper()
 
 
 func toast(text: String) -> void:
 	_toast_label.text = text
-	_toast_label.visible = true
-	_toast_label.reset_size()
-	_toast_label.position = Vector2((size.x - _toast_label.size.x + 220) * 0.5, size.y - 70)
-	_toast_until = Util.now_ms() + 2600
+	_toast.visible = true
+	_toast.reset_size()
+	_toast.position = Vector2((size.x - _toast.size.x + 236) * 0.5, size.y - _toast.size.y - 28)
+	_toast_until = Util.now_ms() + 2800
 
 
 func _copy(text: String, what: String) -> void:
 	if text.is_empty():
 		return
 	DisplayServer.clipboard_set(text)
-	toast(what + " copied - paste it to your teammate")
+	toast("%s copied. Paste it to your teammate." % what)
 
 
 func _pick_folder(title: String, start: String, cb: Callable) -> void:
@@ -357,6 +603,7 @@ func show_screen(name: String) -> void:
 	for k in _nav:
 		_nav[k].set_pressed_no_signal(k == name)
 	_nav["session"].visible = not hosted.is_empty()
+	_scroll.scroll_vertical = 0
 	render()
 
 
@@ -379,72 +626,207 @@ func render() -> void:
 			_render_versions()
 		"settings":
 			_render_settings()
+	_update_chrome()
+
+
+## Top-bar status chip and sidebar footer.
+func _update_chrome() -> void:
+	var text := ""
+	var col := AppTheme.GOOD_TEXT
+	if not hosted.is_empty():
+		var st: Dictionary = Util.read_json(String(hosted.dir).path_join(".coop/status.json"), {})
+		var live: bool = not st.is_empty() and Util.unix_time() - float(st.get("ts", 0)) < 8.0 and st.get("state") == "hosting"
+		var people := 0
+		for p in st.get("peers", []):
+			if p.get("online", false):
+				people += 1
+		text = "Live · %s · %d %s" % [hosted.project, people, "person" if people == 1 else "people"] if live else "Starting Godot · %s" % hosted.project
+		col = AppTheme.GOOD_TEXT if live else AppTheme.WARN
+	elif join_state == "downloading":
+		var pct := int(100.0 * join_done_bytes / max(1, join_total_bytes))
+		text = "Downloading · %d%%" % pct
+		col = AppTheme.ACCENT_HOVER
+	elif join_state in ["connecting", "approval", "loading_plan", "plan"]:
+		text = "Joining a session"
+		col = AppTheme.ACCENT_HOVER
+	_status_chip.visible = not text.is_empty()
+	_status_text.text = text
+	_status_text.add_theme_color_override("font_color", AppTheme.BODY)
+	(_status_dot.get_theme_stylebox("panel") as StyleBoxFlat).bg_color = col
+	_relay_footer.visible = relay != null
+	_relay_footer.text = "Relay running · %d session(s)" % relay.rooms.size() if relay != null else ""
+
+
+func _page_header(title: String, subtitle := "") -> void:
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 4)
+	_page.add_child(v)
+	_label(v, title, "Title")
+	if not subtitle.is_empty():
+		_label(v, subtitle, "Muted", true)
 
 
 # ==================================================================================================
 # Home
 
 func _render_home() -> void:
-	_label(_page, "Build together, live.", "Title")
-	_label(_page, "Scenes, scripts, files and project settings stay in sync between everyone's Godot editor - like Google Docs, for your game.", "Muted", true)
-	var cards := _hrow(_page, 16)
-	var h := _card(cards)
-	_label(h, "Host a project", "Heading")
-	_label(h, "Share a project from this computer. Teammates join with an invite code - no accounts, no servers needed on your LAN.", "Muted", true)
-	_btn(h, "Choose a project…", _home_host, true)
-	var j := _card(cards)
-	_label(j, "Join a session", "Heading")
-	_label(j, "Got an invite from a teammate? Paste it here. We'll download the project and the right Godot version for you.", "Muted", true)
-	var jr := _hrow(j)
-	var code := _line(jr, "", "Invite code, link or short code")
-	code.text_submitted.connect(func(t):
-		show_screen("join")
-		_start_join(t))
-	_btn(jr, "Join", _home_join.bind(code), true)
-	var how := _card(_page, true)
-	_label(how, "How it works", "Subheading")
-	for step in [
-		"1.  The host picks a project here. Godot opens with the Co-op dock and an invite code.",
-		"2.  Teammates paste the code. This app downloads the project (and the matching Godot version) and opens it.",
-		"3.  Everyone edits at once: scene changes, script typing, new files and project settings appear for everyone live.",
-	]:
-		_label(how, step, "Muted", true)
+	_page_header("Welcome back, %s" % String(profile.get("name", "there")), "Edit the same Godot project together, live.")
+	var banner := AppTheme.banner(214)
+	_page.add_child(banner)
+	var bm := MarginContainer.new()
+	for side in ["left", "right"]:
+		bm.add_theme_constant_override("margin_" + side, 36)
+	for side in ["top", "bottom"]:
+		bm.add_theme_constant_override("margin_" + side, 30)
+	banner.add_child(bm)
+	var bh := HBoxContainer.new()
+	bm.add_child(bh)
+	var bv := VBoxContainer.new()
+	bv.add_theme_constant_override("separation", 10)
+	bv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bv.size_flags_stretch_ratio = 1.5
+	bh.add_child(bv)
+	var gap := Control.new()
+	gap.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	bh.add_child(gap)
+	_label(bv, "Build together, live.", "Hero")
+	_label(bv, "Scenes, scripts, files and project settings stay in sync between everyone's editor. Like Google Docs, for your game.", "HeroBody", true)
+	var sp := Control.new()
+	sp.custom_minimum_size.y = 6
+	bv.add_child(sp)
+	var br := _hrow(bv, 12)
+	_btn(br, "Host a project", _home_host, "OnColor")
+	_btn(br, "Join a session", show_screen.bind("join"), "OnColorOutline")
+
+	_label(_page, "Quick actions", "Heading")
+	var grid := _hrow(_page, 16)
+	_action_card(grid, "Ho", AppTheme.TILE_BLUE, "Host a project", "Share a project from this PC. Teammates join with an invite code.", "Choose a project", _home_host)
+	_action_card(grid, "Jn", AppTheme.TILE_GREEN, "Join a session", "Paste an invite. We download the project and the right Godot for you.", "Paste an invite", show_screen.bind("join"))
+	var n: int = installs.installs.size()
+	_action_card(grid, "Gd", AppTheme.TILE_PURPLE, "Godot versions", ("%d editor%s found on this PC." % [n, "" if n == 1 else "s"]) if n > 0 else "No editors found yet. Add or download one.", "Manage versions", show_screen.bind("versions"))
+
+	_label(_page, "Recent", "Heading")
 	var recent: Array = Util.read_json(Util.shared_data_dir().path_join("recent.json"), [])
-	if not recent.is_empty():
-		_label(_page, "Recent", "Heading")
-		var rc := _card(_page, true)
-		for r in recent.slice(0, 8):
-			var row := _hrow(rc)
-			var v := VBoxContainer.new()
-			v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			row.add_child(v)
-			_label(v, String(r.get("project", "?")), "Subheading")
-			_label(v, "%s · %s" % ["Hosted" if r.get("kind") == "host" else "Joined", r.get("path", "")], "Muted")
-			if r.get("kind") == "host":
-				_btn(row, "Host again", func():
-					host_dir = String(r.path)
-					show_screen("host"))
-			else:
-				_btn(row, "Open in Godot", _open_recent.bind(r))
-			_btn(row, "Folder", func(): OS.shell_show_in_file_manager(String(r.path)))
-	var st := _card(_page, true)
-	if installs.installs.is_empty():
-		_label(st, "No Godot editors found yet. Add one under Godot versions (or we'll download the right one when you join).", "Muted", true)
+	var rc := _card(_page)
+	if recent.is_empty():
+		_label(rc, "Projects you host or join appear here.", "Muted")
+		return
+	rc.add_theme_constant_override("separation", 2)
+	var hdr := _hrow(rc, 16)
+	var hm := MarginContainer.new()
+	hm.add_theme_constant_override("margin_left", 10)
+	hm.add_theme_constant_override("margin_right", 10)
+	hm.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	hdr.add_child(hm)
+	var hh := HBoxContainer.new()
+	hh.add_theme_constant_override("separation", 16)
+	hm.add_child(hh)
+	_col(hh, "NAME", 0, 3.0)
+	_col(hh, "TYPE", 90, 0.0)
+	_col(hh, "LOCATION", 0, 4.0)
+	_col(hh, "", 190, 0.0)
+	for r in recent.slice(0, 8):
+		_recent_row(rc, r)
+
+
+func _col(parent: Control, text: String, width: int, ratio: float) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.theme_type_variation = "Caps"
+	l.custom_minimum_size.x = width
+	if ratio > 0.0:
+		l.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		l.size_flags_stretch_ratio = ratio
+	parent.add_child(l)
+	return l
+
+
+func _recent_row(parent: Control, r: Dictionary) -> void:
+	var row := PanelContainer.new()
+	row.theme_type_variation = "Row"
+	_hover(row, "Row", "RowHover")
+	parent.add_child(row)
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", 16)
+	row.add_child(h)
+	var name_box := HBoxContainer.new()
+	name_box.add_theme_constant_override("separation", 12)
+	name_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_box.size_flags_stretch_ratio = 3.0
+	h.add_child(name_box)
+	var hosting: bool = r.get("kind") == "host"
+	name_box.add_child(AppTheme.tile(_initials(String(r.get("project", "?"))), AppTheme.TILE_BLUE if hosting else AppTheme.TILE_GREEN, 32))
+	var nl := _label(name_box, String(r.get("project", "?")), "Subheading")
+	nl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	nl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	var tb := MarginContainer.new()
+	tb.custom_minimum_size.x = 90
+	var bd := AppTheme.badge("Hosted" if hosting else "Joined", AppTheme.ACCENT_HOVER if hosting else AppTheme.GOOD_TEXT)
+	bd.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	tb.add_child(bd)
+	h.add_child(tb)
+	var pl := _label(h, String(r.get("path", "")), "Muted")
+	pl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	pl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pl.size_flags_stretch_ratio = 4.0
+	pl.tooltip_text = String(r.get("path", ""))
+	pl.mouse_filter = Control.MOUSE_FILTER_PASS
+	var acts := HBoxContainer.new()
+	acts.custom_minimum_size.x = 190
+	acts.alignment = BoxContainer.ALIGNMENT_END
+	acts.add_theme_constant_override("separation", 6)
+	h.add_child(acts)
+	if hosting:
+		_btn(acts, "Host again", _host_again.bind(String(r.get("path", ""))))
 	else:
-		var names := PackedStringArray()
-		for i in installs.installs.slice(0, 4):
-			names.append(i.label)
-		_label(st, "Godot editors found: " + ", ".join(names), "Muted", true)
+		_btn(acts, "Open", _open_recent.bind(r))
+	var fb := _btn(acts, "", func(): OS.shell_show_in_file_manager(String(r.get("path", ""))), "Quiet", "folder")
+	fb.tooltip_text = "Show in folder"
+
+
+func _action_card(parent: Control, mono: String, colors: Array, title: String, text: String, action: String, cb: Callable) -> void:
+	var pc := PanelContainer.new()
+	pc.theme_type_variation = "Card"
+	pc.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	pc.mouse_filter = Control.MOUSE_FILTER_STOP
+	pc.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+	_hover(pc, "Card", "CardHover")
+	pc.gui_input.connect(_on_card_input.bind(cb))
+	parent.add_child(pc)
+	var v := VBoxContainer.new()
+	v.add_theme_constant_override("separation", 10)
+	v.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	pc.add_child(v)
+	var t := AppTheme.tile(mono, colors, 48)
+	t.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	v.add_child(t)
+	var tl := _label(v, title, "Subheading")
+	tl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var dl := _label(v, text, "Muted", true)
+	dl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var push := Control.new()
+	push.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	push.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	v.add_child(push)
+	var b := _btn(v, action, cb, "Link", "arrow")
+	b.icon_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	b.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+
+
+func _on_card_input(e: InputEvent, cb: Callable) -> void:
+	if e is InputEventMouseButton and e.pressed and e.button_index == MOUSE_BUTTON_LEFT:
+		cb.call()
 
 
 func _home_host() -> void:
 	show_screen("host")
-	_choose_host_folder()
+	if host_dir.is_empty():
+		_choose_host_folder()
 
 
-func _home_join(code: LineEdit) -> void:
-	show_screen("join")
-	_start_join(code.text)
+func _host_again(path: String) -> void:
+	host_dir = path
+	show_screen("host")
 
 
 func _open_recent(r: Dictionary) -> void:
@@ -452,10 +834,10 @@ func _open_recent(r: Dictionary) -> void:
 	var info := Installer.project_info(path)
 	var exe := _pick_editor_for(String(info.get("feature", "")), bool(info.get("dotnet", false)))
 	if exe.is_empty():
-		toast("No matching Godot editor found - see Godot versions.")
+		toast("No matching Godot editor found. See Godot versions.")
 		return
 	Installer.launch_editor(exe, path)
-	toast("Opening %s… use the Co-op dock's Rejoin button." % r.get("project", ""))
+	toast("Opening %s. Use Rejoin in the Co-op dock to reconnect." % r.get("project", ""))
 
 
 func _add_recent(kind: String, path: String, project: String) -> void:
@@ -481,64 +863,66 @@ func _choose_host_folder() -> void:
 
 
 func _render_host() -> void:
-	_label(_page, "Host a project", "Title")
-	var c := _card(_page)
-	_label(c, "Project folder", "Subheading")
-	var r := _hrow(c)
-	var path_edit := _line(r, host_dir, "C:/Users/you/Documents/MyGame")
+	_page_header("Host a project", "Share a project from this PC. Godot opens with an invite code for your teammates.")
+	var c := _card(_page, "Project")
+	var fr := _form_row(c, "Project folder", "The folder that contains project.godot.")
+	var path_edit := _line(fr, host_dir, "C:/Users/you/Documents/MyGame")
 	path_edit.text_submitted.connect(func(t):
 		host_dir = t.strip_edges().replace("\\", "/")
 		render())
-	_btn(r, "Browse…", _choose_host_folder)
+	_btn(fr, "Browse", _choose_host_folder, "", "folder")
 	if host_dir.is_empty():
-		_label(c, "Pick the folder that contains project.godot.", "Muted")
+		_action_bar(false)
 		return
 	var info := Installer.project_info(host_dir)
 	if info.is_empty():
-		_label(c, "There's no project.godot in that folder.", "Muted").add_theme_color_override("font_color", AppTheme.BAD)
+		var w := _hrow(c, 8)
+		w.add_child(_icon_rect("warning", 18, AppTheme.BAD))
+		_label(w, "There's no project.godot in that folder.", "Body").add_theme_color_override("font_color", AppTheme.BAD)
+		_action_bar(false)
 		return
-	_kv(c, "Project", String(info.name))
-	_kv(c, "Made with Godot", String(info.feature) + (" (.NET)" if info.dotnet else ""))
+	c.add_child(HSeparator.new())
+	_detail(c, "Project", String(info.name))
+	_detail(c, "Made with", "Godot %s%s" % [info.feature, " (.NET)" if info.dotnet else ""])
 	var matches: Array = installs.find_for_feature(String(info.feature), bool(info.dotnet))
-	var er := _hrow(c)
-	var el := Label.new()
-	el.text = "Open with"
-	el.theme_type_variation = "Muted"
-	el.custom_minimum_size.x = 160
-	er.add_child(el)
+	var er := _form_row(c, "Open with")
 	_host_exe_pick = OptionButton.new()
 	_host_exe_pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_host_exe_pick.custom_minimum_size.y = 34
 	for i in installs.installs:
-		_host_exe_pick.add_item("Godot %s - %s" % [i.label, String(i.path).get_file()])
+		_host_exe_pick.add_item("Godot %s   %s" % [i.label, String(i.path).get_file()])
 		_host_exe_pick.set_item_metadata(_host_exe_pick.item_count - 1, i.path)
 		if not matches.is_empty() and i.path == matches[0].path:
 			_host_exe_pick.select(_host_exe_pick.item_count - 1)
 	er.add_child(_host_exe_pick)
 	if matches.is_empty():
-		_label(c, "None of your Godot editors match %s. Add or download one under Godot versions." % info.feature, "Muted", true).add_theme_color_override("font_color", AppTheme.WARN)
-	_kv(c, "Co-op plugin", "Installed" if info.plugin_installed else "Will be added to addons/godot_coop (teammates get it automatically)", AppTheme.GOOD if info.plugin_installed else AppTheme.TEXT)
-	var o := _card(_page, true)
-	_label(o, "Connection", "Subheading")
-	var up := CheckBox.new()
-	up.text = "Open the port on my router automatically (UPnP)"
-	up.button_pressed = bool(settings.use_upnp)
-	up.toggled.connect(func(on):
+		var w := _hrow(c, 8)
+		w.add_child(_icon_rect("warning", 18, AppTheme.WARN))
+		_label(w, "None of your Godot editors match %s. Add or download one under Godot versions." % info.feature, "Body", true).add_theme_color_override("font_color", AppTheme.WARN)
+	var pr := _form_row(c, "Co-op plugin")
+	if info.plugin_installed:
+		pr.add_child(AppTheme.badge("Installed", AppTheme.GOOD_TEXT))
+	else:
+		_label(pr, "Added to addons/godot_coop when you start. Teammates get it automatically.", "Body", true)
+	var o := _card(_page, "Connection")
+	_switch(o, "Open the port on my router automatically (UPnP)", bool(settings.use_upnp), func(on):
 		settings.use_upnp = on
 		_save_settings())
-	o.add_child(up)
-	var av := CheckBox.new()
-	av.text = "Let viewers (read-only invite) in without asking"
-	av.button_pressed = bool(settings.auto_accept_viewers)
-	av.toggled.connect(func(on):
+	_switch(o, "Let viewers (read-only invite) in without asking", bool(settings.auto_accept_viewers), func(on):
 		settings.auto_accept_viewers = on
 		_save_settings())
-	o.add_child(av)
 	if String(settings.relay_host).is_empty():
-		_label(o, "Tip: on different networks, people connect directly if your router supports UPnP. For guaranteed connections and short codes, set a relay server in Settings.", "Muted", true)
+		_label(o, "On different networks, people connect directly when your router supports UPnP. For guaranteed connections and short codes, add a relay server in Settings.", "Muted", true)
 	else:
-		_label(o, "Relay: %s:%d (used when a direct connection isn't possible)" % [settings.relay_host, int(settings.relay_port)], "Muted", true)
-	var go := _btn(_page, "Start hosting", _start_hosting, true)
-	go.disabled = installs.installs.is_empty()
+		_label(o, "Relay %s:%d is used when a direct connection isn't possible." % [settings.relay_host, int(settings.relay_port)], "Muted", true)
+	_action_bar(not installs.installs.is_empty())
+
+
+func _action_bar(enabled: bool) -> void:
+	var bar := _hrow(_page, 12)
+	_spacer(bar)
+	var go := _btn(bar, "Start hosting", _start_hosting, "Primary", "host")
+	go.disabled = not enabled
 
 
 func _start_hosting() -> void:
@@ -546,8 +930,10 @@ func _start_hosting() -> void:
 	if info.is_empty():
 		return
 	var exe := ""
-	if _host_exe_pick != null and _host_exe_pick.selected >= 0:
+	if _host_exe_pick != null and is_instance_valid(_host_exe_pick) and _host_exe_pick.selected >= 0:
 		exe = String(_host_exe_pick.get_item_metadata(_host_exe_pick.selected))
+	if exe.is_empty():
+		exe = _pick_editor_for(String(info.feature), bool(info.dotnet))
 	if exe.is_empty():
 		toast("Pick a Godot editor first.")
 		return
@@ -572,59 +958,88 @@ func _start_hosting() -> void:
 
 
 # ==================================================================================================
-# Hosting status (read from the editor plugin's .coop/status.json)
+# Live session (read from the editor plugin's .coop/status.json)
 
 func _render_session() -> void:
 	if hosted.is_empty():
-		_label(_page, "You're not hosting anything from this app right now.", "Muted")
+		_page_header("Live session", "You're not hosting anything from this app right now.")
 		return
 	_host_status = Util.read_json(String(hosted.dir).path_join(".coop/status.json"), {})
 	var fresh := not _host_status.is_empty() and Util.unix_time() - float(_host_status.get("ts", 0)) < 8.0
-	_label(_page, "Hosting %s" % hosted.project, "Title")
-	var st := _hrow(_page)
-	var col := AppTheme.GOOD if fresh and _host_status.get("state") == "hosting" else AppTheme.WARN
-	st.add_child(_dot(col, 12))
-	var stext := "Live" if fresh and _host_status.get("state") == "hosting" else ("Godot is starting… (first launch imports the project)" if not fresh else String(_host_status.get("state", "")).capitalize())
-	_label(st, stext, "Subheading")
-	var c := _card(_page)
-	_label(c, "Invite", "Heading")
+	var live: bool = fresh and _host_status.get("state") == "hosting"
+	var head := _hrow(_page, 14)
+	var hv := VBoxContainer.new()
+	hv.add_theme_constant_override("separation", 4)
+	hv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(hv)
+	var tl := _hrow(hv, 12)
+	_label(tl, "Hosting %s" % hosted.project, "Title")
+	tl.add_child(AppTheme.badge("Live" if live else ("Starting" if not fresh else String(_host_status.get("state", "")).capitalize()), AppTheme.GOOD_TEXT if live else AppTheme.WARN))
+	_label(hv, "Godot is open. You approve people inside Godot, in the Co-op dock." if live else "Godot is starting. The first launch imports the project, which can take a minute.", "Muted", true)
+	var c := _card(_page, "Invite")
 	if not fresh or not bool(_host_status.get("ready", false)):
-		_label(c, "Preparing your invite… (checking your router and relay)", "Muted")
+		_label(c, "Preparing your invite. Checking your router and relay.", "Muted")
+		_progress(c, 0, 1, true)
 	else:
 		var code := String(_host_status.get("invite", ""))
 		var ce := LineEdit.new()
 		ce.text = code
 		ce.editable = false
-		ce.add_theme_font_size_override("font_size", 14)
+		ce.custom_minimum_size.y = 40
+		ce.add_theme_font_size_override("font_size", 13)
 		c.add_child(ce)
-		var r := _hrow(c)
-		_btn(r, "Copy invite code", func(): _copy(code, "Invite code"), true)
-		_btn(r, "Copy link", func(): _copy(Invite.link(code), "Invite link"))
+		var r := _hrow(c, 10)
+		_btn(r, "Copy invite", func(): _copy(code, "Invite code"), "Primary", "copy")
+		_btn(r, "Copy link", func(): _copy(Invite.link(code), "Invite link"), "", "link")
+		_btn(r, "Copy read-only invite", func(): _copy(String(_host_status.get("viewer_invite", "")), "Read-only invite"), "", "user")
 		if not String(settings.web_link_base).is_empty():
-			_btn(r, "Copy web link", func(): _copy(Invite.web_link(String(settings.web_link_base), code), "Web link"))
-		_btn(r, "Copy read-only invite", func(): _copy(String(_host_status.get("viewer_invite", "")), "Viewer invite"))
+			_btn(r, "Copy web link", func(): _copy(Invite.web_link(String(settings.web_link_base), code), "Web link"), "", "globe")
 		var short := String(_host_status.get("short", ""))
 		if not short.is_empty():
-			var sr := _hrow(c)
-			_label(sr, "Short code:", "Muted")
-			var sl := _label(sr, Invite.pretty_short_code(short), "Heading")
+			c.add_child(HSeparator.new())
+			var sr := _form_row(c, "Short code", "Works with this relay for 24 hours.")
+			var sl := _label(sr, Invite.pretty_short_code(short), "Title")
 			sl.add_theme_color_override("font_color", AppTheme.ACCENT_HOVER)
-			_btn(sr, "Copy", func(): _copy(Invite.pretty_short_code(short), "Short code"))
-		_label(c, "Send the code or link to your teammate (Discord, email…). They paste it into Godot Co-op. You approve them in the Co-op dock inside Godot.", "Muted", true)
-	var pc := _card(_page, true)
-	_label(pc, "People", "Subheading")
-	for p in _host_status.get("peers", []):
-		var row := _hrow(pc)
-		row.add_child(_dot(Color.from_string(String(p.get("color", "fff")), Color.WHITE) if p.get("online", false) else Color(0.35, 0.35, 0.35), 10))
-		_label(row, "%s  ·  %s%s" % [p.get("name", "?"), p.get("role", ""), "" if p.get("online", false) else " (offline)"])
-	var br := _hrow(_page)
-	_btn(br, "Open project folder", func(): OS.shell_show_in_file_manager(String(hosted.dir)))
-	_btn(br, "End session", func():
-		Util.write_json(String(hosted.dir).path_join(".coop/control.json"), {"cmd": "end"})
-		toast("Asked the editor to end the session."))
-	_btn(br, "Forget", func():
-		hosted = {}
-		show_screen("home"))
+			var cb := _btn(sr, "", func(): _copy(Invite.pretty_short_code(short), "Short code"), "Quiet", "copy")
+			cb.tooltip_text = "Copy short code"
+		_label(c, "Send the code or link over Discord, email or anything else. Your teammate pastes it into Godot Co-op.", "Muted", true)
+	var peers: Array = _host_status.get("peers", [])
+	var pc := _card(_page, "People")
+	if peers.is_empty():
+		_label(pc, "Nobody here yet.", "Muted")
+	for p in peers:
+		var row := _hrow(pc, 12)
+		var online: bool = p.get("online", false)
+		row.add_child(AppTheme.avatar(String(p.get("name", "?")), Color.from_string(String(p.get("color", "fff")), Color.WHITE) if online else Color("#4a4a4a"), 30))
+		var nl := _label(row, String(p.get("name", "?")), "Subheading")
+		nl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		var role := String(p.get("role", ""))
+		row.add_child(AppTheme.badge({"owner": "Host", "editor": "Editor", "viewer": "Viewer"}.get(role, role.capitalize()), AppTheme.ACCENT_HOVER))
+		row.add_child(AppTheme.badge("Online" if online else "Offline", AppTheme.GOOD_TEXT if online else AppTheme.MUTED))
+	var br := _hrow(_page, 10)
+	_btn(br, "Open project folder", func(): OS.shell_show_in_file_manager(String(hosted.dir)), "", "folder")
+	_btn(br, "End session", _end_hosted_session, "", "stop")
+	_spacer(br)
+	_btn(br, "Forget this session", _forget_session, "Quiet")
+
+
+func _end_hosted_session() -> void:
+	Util.write_json(String(hosted.dir).path_join(".coop/control.json"), {"cmd": "end"})
+	toast("Asked Godot to end the session.")
+
+
+func _forget_session() -> void:
+	hosted = {}
+	show_screen("home")
+
+
+func _session_signature() -> String:
+	if hosted.is_empty():
+		return ""
+	var st: Dictionary = Util.read_json(String(hosted.dir).path_join(".coop/status.json"), {})
+	var fresh := not st.is_empty() and Util.unix_time() - float(st.get("ts", 0)) < 8.0
+	st.erase("ts")
+	return JSON.stringify(st) + str(fresh)
 
 
 # ==================================================================================================
@@ -688,7 +1103,7 @@ func _wire_join_files() -> void:
 func _resolve_short(code: String) -> void:
 	if String(settings.relay_host).is_empty():
 		join_state = "error"
-		join_error = "Short codes are looked up on a relay server. Set one in Settings, or paste the full invite code."
+		join_error = "Short codes are looked up on a relay server. Add one in Settings, or paste the full invite code."
 		render()
 		return
 	join_state = "connecting"
@@ -764,48 +1179,60 @@ func _set_join_dest(d: String) -> void:
 	render()
 
 
+func _cancel_and_render() -> void:
+	_cancel_join()
+	render()
+
+
+func _waiting_card(title: String, text: String) -> void:
+	var c := _card(_page)
+	_label(c, title, "Heading")
+	_label(c, text, "Muted", true)
+	_progress(c, 0, 1, true)
+	var r := _hrow(c)
+	_btn(r, "Cancel", _cancel_and_render)
+
+
 func _render_join() -> void:
-	_label(_page, "Join a session", "Title")
+	_page_header("Join a session", "Paste the invite your teammate sent. We download the project and open it in the right Godot.")
 	match join_state:
 		"", "error":
 			var c := _card(_page)
-			_label(c, "Paste the invite code or link your teammate sent you.", "Muted", true)
-			var r := _hrow(c)
-			var e := _line(r, join_code if join_state == "error" else "", "gdc1.…  or  godotcoop://join/…  or  ABCD-EFGH")
+			var fr := _form_row(c, "Invite", "A code, a godotcoop:// link, or a short code.")
+			var e := _line(fr, join_code if join_state == "error" else "", "gdc1.…")
 			e.text_submitted.connect(_start_join)
-			_btn(r, "Connect", func(): _start_join(e.text), true)
+			_btn(fr, "Connect", func(): _start_join(e.text), "Primary")
 			if join_state == "error":
-				_label(c, join_error, "", true).add_theme_color_override("font_color", AppTheme.BAD)
+				var w := _hrow(c, 8)
+				w.add_child(_icon_rect("warning", 18, AppTheme.BAD))
+				_label(w, join_error, "Body", true).add_theme_color_override("font_color", AppTheme.BAD)
 		"connecting":
-			var c := _card(_page)
-			_label(c, "Reaching the host…", "Heading")
-			_label(c, "Trying a direct connection first, then the relay if there is one.", "Muted", true)
-			_btn(c, "Cancel", func():
-				_cancel_join()
-				render())
+			_waiting_card("Reaching the host", "Trying a direct connection first, then the relay if there is one.")
 		"approval":
-			var c := _card(_page)
-			_label(c, "Waiting for the host to let you in…", "Heading")
-			_label(c, "They'll see a request in their Godot editor.", "Muted", true)
-			_btn(c, "Cancel", func():
-				_cancel_join()
-				render())
+			_waiting_card("Waiting for the host to let you in", "They'll see your request inside Godot.")
 		"loading_plan":
-			var c := _card(_page)
-			_label(c, "You're in! Checking what to download…", "Heading")
+			_waiting_card("You're in", "Checking what needs to be downloaded.")
 		"plan":
 			_render_join_plan()
 		"downloading":
 			_render_join_progress()
 		"done":
 			var c := _card(_page)
-			_label(c, "You're in!", "Heading")
-			_label(c, "Godot is opening %s and will connect to the session by itself. The first launch imports the project, which can take a minute." % join_session_project(), "Muted", true)
-			var r := _hrow(c)
-			_btn(r, "Open project folder", func(): OS.shell_show_in_file_manager(join_dest))
-			_btn(r, "Back to home", func():
-				join_state = ""
-				show_screen("home"))
+			var h := _hrow(c, 16)
+			h.add_child(AppTheme.icon_tile("check", AppTheme.TILE_GREEN, 48))
+			var v := VBoxContainer.new()
+			v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			h.add_child(v)
+			_label(v, "You're in", "Heading")
+			_label(v, "Godot is opening %s and connects to the session by itself. The first launch imports the project, which can take a minute." % join_session_project(), "Muted", true)
+			var r := _hrow(c, 10)
+			_btn(r, "Open project folder", func(): OS.shell_show_in_file_manager(join_dest), "", "folder")
+			_btn(r, "Back to home", _back_home, "Quiet")
+
+
+func _back_home() -> void:
+	join_state = ""
+	show_screen("home")
 
 
 func join_session_project() -> String:
@@ -819,75 +1246,81 @@ func _render_join_plan() -> void:
 	var hi: Dictionary = s.host_info
 	var need: Dictionary = hi.get("godot", {})
 	var c := _card(_page)
-	_label(c, "%s's project: %s" % [hi.get("host_name", "Host"), hi.get("project", "")], "Heading")
+	var head := _hrow(c, 14)
+	head.add_child(AppTheme.tile(_initials(String(hi.get("project", "?"))), AppTheme.TILE_BLUE, 48))
+	var hv := VBoxContainer.new()
+	hv.add_theme_constant_override("separation", 2)
+	head.add_child(hv)
+	_label(hv, String(hi.get("project", "")), "Heading")
+	_label(hv, "Hosted by %s" % hi.get("host_name", "your teammate"), "Muted")
+	c.add_child(HSeparator.new())
 	var count := int(join_plan.get("count", 0))
 	var total := int(join_plan.get("total", 0))
-	_kv(c, "To download", "%d files, %s" % [count, Util.human_bytes(total)] if count > 0 else "Nothing - you're up to date")
+	_detail(c, "To download", ("%d files, %s" % [count, Util.human_bytes(total)]) if count > 0 else "Nothing. You're up to date.")
 	var exact: Dictionary = installs.find_exact(need)
-	var vrow := _kv(c, "Godot version", Util.version_label(need) + ("  ✓ installed" if not exact.is_empty() else "  - not installed"), AppTheme.GOOD if not exact.is_empty() else AppTheme.WARN)
-	vrow.tooltip_text = String(exact.get("path", ""))
+	var vr := _form_row(c, "Godot version")
+	_label(vr, Util.version_label(need))
+	vr.add_child(AppTheme.badge("Installed" if not exact.is_empty() else "Not installed", AppTheme.GOOD_TEXT if not exact.is_empty() else AppTheme.WARN))
 	if exact.is_empty():
-		var vr := _hrow(c)
+		var dr := _form_row(c, "")
 		if installs.is_downloading():
-			var pb := ProgressBar.new()
-			pb.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-			pb.max_value = max(1, _dl_progress.y)
-			pb.value = _dl_progress.x
-			pb.custom_minimum_size.y = 22
-			vr.add_child(pb)
-			_label(vr, "%s / %s" % [Util.human_bytes(_dl_progress.x), Util.human_bytes(_dl_progress.y)], "Muted")
+			var dv := VBoxContainer.new()
+			dv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+			dr.add_child(dv)
+			_progress(dv, _dl_progress.x, _dl_progress.y)
+			_label(dv, "%s of %s" % [Util.human_bytes(_dl_progress.x), Util.human_bytes(_dl_progress.y)], "Muted")
 		else:
-			_btn(vr, "Download Godot %s" % Util.version_label(need), _download_version.bind(need), true)
-			_btn(vr, "I have it - locate…", _locate_editor)
+			_btn(dr, "Download Godot %s" % Util.version_label(need), _download_version.bind(need), "Primary", "download")
+			_btn(dr, "Locate it", _locate_editor, "", "folder")
 		if not _dl_msg.is_empty():
 			_label(c, _dl_msg, "Muted", true)
-	var dr := _hrow(c)
-	var dl := Label.new()
-	dl.text = "Save to"
-	dl.theme_type_variation = "Muted"
-	dl.custom_minimum_size.x = 160
-	dr.add_child(dl)
-	var de := _line(dr, join_dest, "")
+	var sr := _form_row(c, "Save to")
+	var de := _line(sr, join_dest, "")
 	de.text_submitted.connect(_set_join_dest)
-	_btn(dr, "Change…", func(): _pick_folder("Where should the project go?", String(settings.projects_dir), _set_join_dest))
+	_btn(sr, "Change", func(): _pick_folder("Where should the project go?", String(settings.projects_dir), _set_join_dest), "", "folder")
 	var git: Dictionary = hi.get("git", {})
 	if git.get("ok", false) and not String(git.get("remote", "")).is_empty() and Git.available():
-		var gc := CheckBox.new()
-		gc.text = "Clone the git repository first (%s @ %s) so your history matches" % [git.get("branch", ""), String(git.get("head", "")).substr(0, 8)]
-		gc.button_pressed = join_clone
-		gc.toggled.connect(func(on): join_clone = on)
-		c.add_child(gc)
+		var gr := _form_row(c, "Git")
+		_switch(gr, "Clone the repository first (%s at %s) so your history matches" % [git.get("branch", ""), String(git.get("head", "")).substr(0, 8)], join_clone, func(on): join_clone = on)
 	var risky: Array = join_plan.get("risky", [])
 	if not risky.is_empty():
-		var rc := _card(_page, true)
-		var rh := _label(rc, "%d file(s) in this project can run code inside the Godot editor" % risky.size(), "Subheading")
-		rh.add_theme_color_override("font_color", AppTheme.WARN)
-		_label(rc, "Editor plugins, @tool scripts and native libraries run as soon as Godot opens the project. Only continue if you trust %s." % hi.get("host_name", "the host"), "Muted", true)
+		var rc := _card(_page, "", "Callout")
+		var rh := _hrow(rc, 12)
+		var wi := _icon_rect("warning", 22, AppTheme.WARN)
+		wi.size_flags_vertical = Control.SIZE_SHRINK_BEGIN
+		rh.add_child(wi)
+		var rv := VBoxContainer.new()
+		rv.add_theme_constant_override("separation", 8)
+		rv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		rh.add_child(rv)
+		_label(rv, "%d file%s in this project can run code inside Godot" % [risky.size(), "" if risky.size() == 1 else "s"], "Subheading")
+		_label(rv, "Editor plugins, @tool scripts and native libraries run as soon as Godot opens the project. Only continue if you trust %s." % hi.get("host_name", "the host"), "Muted", true)
 		var list := RichTextLabel.new()
 		list.fit_content = true
 		list.bbcode_enabled = true
+		list.scroll_active = false
 		var t := ""
 		for r in risky.slice(0, 30):
-			t += "• [b]%s[/b] - [color=#8d96a8]%s[/color]\n" % [String(r[0]).replace("[", "[lb]"), r[1]]
+			t += "[b]%s[/b]   [color=#9b9b9b]%s[/color]\n" % [String(r[0]).replace("[", "[lb]"), r[1]]
 		if risky.size() > 30:
-			t += "…and %d more" % (risky.size() - 30)
+			t += "[color=#9b9b9b]and %d more[/color]" % (risky.size() - 30)
 		list.text = t
-		rc.add_child(list)
+		rv.add_child(list)
 		var tc := CheckBox.new()
-		tc.text = "I trust %s - allow these files" % hi.get("host_name", "the host")
+		tc.text = "I trust %s. Allow these files." % hi.get("host_name", "the host")
 		tc.button_pressed = join_trust
 		tc.toggled.connect(func(on):
 			join_trust = on
 			render())
-		rc.add_child(tc)
-	var br := _hrow(_page)
-	var go := _btn(br, "Download & open in Godot", _begin_download, true)
-	go.disabled = exact.is_empty() or (not risky.is_empty() and not join_trust)
-	_btn(br, "Cancel", func():
-		_cancel_join()
-		render())
+		rv.add_child(tc)
+	var bar := _hrow(_page, 12)
 	if exact.is_empty():
-		_label(_page, "Install Godot %s first - everyone in a session needs the exact same version." % Util.version_label(need), "Muted", true)
+		_label(bar, "Install Godot %s first. Everyone in a session needs the exact same version." % Util.version_label(need), "Muted", true)
+	else:
+		_spacer(bar)
+	_btn(bar, "Cancel", _cancel_and_render)
+	var go := _btn(bar, "Download and open in Godot", _begin_download, "Primary", "download")
+	go.disabled = exact.is_empty() or (not risky.is_empty() and not join_trust)
 
 
 func _download_version(v: Dictionary) -> void:
@@ -911,7 +1344,7 @@ func _begin_download() -> void:
 	if join_clone and (not DirAccess.dir_exists_absolute(join_dest) or DirAccess.get_files_at(join_dest).is_empty()):
 		var git: Dictionary = s.host_info.get("git", {})
 		join_state = "downloading"
-		join_current = "Cloning git repository…"
+		join_current = "Cloning the git repository"
 		render()
 		_clone_thread = Thread.new()
 		_clone_thread.start(func(): return Git.clone(String(git.remote), join_dest, String(git.head)))
@@ -934,16 +1367,31 @@ func _start_file_download() -> void:
 
 func _render_join_progress() -> void:
 	var c := _card(_page)
-	_label(c, "Downloading %s…" % join_session_project(), "Heading")
-	var pb := ProgressBar.new()
+	var h := _hrow(c, 12)
+	_label(h, "Downloading %s" % join_session_project(), "Heading")
+	_spacer(h)
+	var pct := _label(h, "0%", "Heading")
+	pct.name = "JoinPercent"
+	pct.add_theme_color_override("font_color", AppTheme.ACCENT_HOVER)
+	var pb := _progress(c, join_done_bytes, join_total_bytes)
 	pb.name = "JoinProgress"
-	pb.custom_minimum_size.y = 26
-	pb.max_value = max(1, join_total_bytes)
-	pb.value = join_done_bytes
-	c.add_child(pb)
-	var l := _label(c, "%s of %s  ·  %s" % [Util.human_bytes(join_done_bytes), Util.human_bytes(join_total_bytes), join_current], "Muted")
+	var l := _label(c, "", "Muted")
 	l.name = "JoinProgressLabel"
 	l.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+	_update_join_progress()
+
+
+func _update_join_progress() -> void:
+	var pb = find_child("JoinProgress", true, false)
+	var pl = find_child("JoinProgressLabel", true, false)
+	var pc = find_child("JoinPercent", true, false)
+	if pb != null:
+		pb.max_value = max(1, join_total_bytes)
+		pb.value = join_done_bytes
+	if pc != null:
+		pc.text = "%d%%" % int(100.0 * join_done_bytes / max(1, join_total_bytes))
+	if pl != null:
+		pl.text = "%s of %s%s" % [Util.human_bytes(join_done_bytes), Util.human_bytes(join_total_bytes), ("    " + join_current) if not join_current.is_empty() else ""]
 
 
 func _on_download_done(_summary: Dictionary) -> void:
@@ -982,46 +1430,60 @@ func _on_version_download_done(ok: bool, msg: String) -> void:
 # Godot versions
 
 func _render_versions() -> void:
-	_label(_page, "Godot versions", "Title")
-	_label(_page, "Everyone in a session must use exactly the same Godot version. We find the editors on this computer and can download any official build.", "Muted", true)
+	_page_header("Godot versions", "Everyone in a session needs the exact same Godot version. We find the editors on this PC and can download any official build.")
 	var c := _card(_page)
+	var head := _hrow(c, 8)
+	_label(head, "Installed", "Heading")
+	_spacer(head)
+	_btn(head, "Add an editor", _locate_editor, "Quiet", "plus")
+	_btn(head, "Rescan", _rescan, "Quiet", "refresh")
 	if installs.installs.is_empty():
-		_label(c, "No Godot editors found.", "Muted")
+		_label(c, "No Godot editors found on this PC yet.", "Muted")
+	var list := VBoxContainer.new()
+	list.add_theme_constant_override("separation", 2)
+	c.add_child(list)
 	for i in installs.installs:
-		var r := _hrow(c)
-		var v := VBoxContainer.new()
-		v.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		r.add_child(v)
-		_label(v, "Godot " + String(i.label), "Subheading")
-		_label(v, String(i.path), "Muted")
-		_btn(r, "Show", func(): OS.shell_show_in_file_manager(String(i.path)))
-	var br := _hrow(c)
-	_btn(br, "Add an editor…", _locate_editor)
-	_btn(br, "Rescan", func():
-		installs.scan()
-		render())
-	var d := _card(_page, true)
-	_label(d, "Download a version", "Subheading")
-	var dr := _hrow(d)
-	var ve := _line(dr, "4.7.2-stable", "e.g. 4.7.2-stable or 4.8-beta1")
+		var row := PanelContainer.new()
+		row.theme_type_variation = "Row"
+		_hover(row, "Row", "RowHover")
+		list.add_child(row)
+		var h := HBoxContainer.new()
+		h.add_theme_constant_override("separation", 14)
+		row.add_child(h)
+		var v: Dictionary = i.version
+		h.add_child(AppTheme.tile("%d.%d" % [int(v.major), int(v.minor)], AppTheme.TILE_PURPLE if v.get("dotnet", false) else AppTheme.TILE_BLUE, 38))
+		var tv := VBoxContainer.new()
+		tv.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		tv.add_theme_constant_override("separation", 0)
+		h.add_child(tv)
+		_label(tv, "Godot " + String(i.label), "Subheading")
+		var pl := _label(tv, String(i.path), "Muted")
+		pl.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
+		var sb := _btn(h, "", func(): OS.shell_show_in_file_manager(String(i.path)), "Quiet", "folder")
+		sb.tooltip_text = "Show in folder"
+	var d := _card(_page, "Download a version")
+	var dr := _form_row(d, "Version", "For example 4.7.2-stable or 4.8-beta1.")
+	var ve := _line(dr, "4.7.2-stable", "4.7.2-stable")
 	var net := CheckBox.new()
 	net.text = ".NET (C#)"
 	dr.add_child(net)
-	_btn(dr, "Download", _download_typed_version.bind(ve, net), true)
+	_btn(dr, "Download", _download_typed_version.bind(ve, net), "Primary", "download")
 	if installs.is_downloading():
-		var pb := ProgressBar.new()
-		pb.max_value = max(1, _dl_progress.y)
-		pb.value = _dl_progress.x
-		pb.custom_minimum_size.y = 22
-		d.add_child(pb)
+		_progress(d, _dl_progress.x, _dl_progress.y)
+		_label(d, "%s of %s" % [Util.human_bytes(_dl_progress.x), Util.human_bytes(_dl_progress.y)], "Muted")
 	if not _dl_msg.is_empty():
 		_label(d, _dl_msg, "Muted", true)
+
+
+func _rescan() -> void:
+	installs.scan()
+	render()
 
 
 func _download_typed_version(ve: LineEdit, net: CheckBox) -> void:
 	var v := _parse_version(ve.text, net.button_pressed)
 	if v.is_empty():
-		toast("Use a version like 4.7.2-stable")
+		toast("Use a version like 4.7.2-stable.")
 		return
 	_download_version(v)
 
@@ -1040,26 +1502,24 @@ static func _parse_version(text: String, dotnet: bool) -> Dictionary:
 # Settings
 
 func _render_settings() -> void:
-	_label(_page, "Settings", "Title")
-	var p := _card(_page)
-	_label(p, "You", "Heading")
-	var r := _hrow(p)
+	_page_header("Settings")
+	var p := _card(_page, "Profile")
+	var cr := _form_row(p, "Colour", "How teammates see you.")
 	var cp := ColorPickerButton.new()
 	cp.color = Util.color_of(profile)
 	cp.edit_alpha = false
-	cp.custom_minimum_size = Vector2(44, 36)
+	cp.custom_minimum_size = Vector2(56, 34)
 	cp.color_changed.connect(func(col):
 		profile.color = col.to_html(false)
-		Util.save_profile(profile))
-	r.add_child(cp)
-	_line(r, String(profile.get("name", "")), "Your name", _on_name_changed)
-	_line(p, String(profile.get("email", "")), "Email for git co-author credit (optional)", func(t):
+		Util.save_profile(profile)
+		_refresh_avatar())
+	cr.add_child(cp)
+	_line(_form_row(p, "Name"), String(profile.get("name", "")), "Your name", _on_name_changed)
+	_line(_form_row(p, "Email", "Optional. Used for git co-author credit."), String(profile.get("email", "")), "you@example.com", func(t):
 		profile.email = t.strip_edges()
 		Util.save_profile(profile))
-	var n := _card(_page)
-	_label(n, "Network", "Heading")
-	_label(n, "Relay server (optional): makes connections work through any firewall and enables short codes like ABCD-EFGH. Everyone in a session uses the host's relay automatically.", "Muted", true)
-	var rr := _hrow(n)
+	var n := _card(_page, "Network")
+	var rr := _form_row(n, "Relay server", "Optional. Lets people connect through any firewall and enables short codes.")
 	_line(rr, String(settings.relay_host), "relay.example.com", func(t):
 		settings.relay_host = t.strip_edges()
 		_save_settings())
@@ -1067,46 +1527,61 @@ func _render_settings() -> void:
 	rp.min_value = 1
 	rp.max_value = 65000
 	rp.value = int(settings.relay_port)
+	rp.custom_minimum_size.x = 110
 	rp.value_changed.connect(func(v):
 		settings.relay_port = int(v)
 		_save_settings())
 	rr.add_child(rp)
-	_label(n, "Invite web page (optional): host web/join/index.html anywhere (e.g. GitHub Pages) and paste its URL so invites become clickable https links.", "Muted", true)
-	_line(n, String(settings.web_link_base), "https://you.github.io/godot-coop/join/", func(t):
+	_line(_form_row(n, "Invite web page", "Optional. Host web/join/index.html anywhere so invites become clickable https links."), String(settings.web_link_base), "https://you.github.io/godot-coop/join/", func(t):
 		settings.web_link_base = t.strip_edges()
 		_save_settings())
-	var lk := _card(_page)
-	_label(lk, "Invite links", "Heading")
-	_label(lk, "Make godotcoop:// links open this app when clicked (current Windows user only).", "Muted", true)
-	_btn(lk, "Register godotcoop:// links", func():
-		var err := Installer.register_url_scheme()
-		toast("Links registered." if err.is_empty() else err))
-	var rl := _card(_page)
-	_label(rl, "Relay server", "Heading")
-	_label(rl, "Run a relay on this computer for your team. Forward UDP ports %d-%d on your router (or run it on a cheap server with: GodotCoop.exe --headless -- --relay)." % [Util.DEFAULT_RELAY_PORT, Util.DEFAULT_RELAY_PORT + 1], "Muted", true)
-	var cb := CheckBox.new()
-	cb.text = "Run a relay server here (UDP %d)" % Util.DEFAULT_RELAY_PORT
-	cb.button_pressed = relay != null
-	cb.toggled.connect(_on_relay_toggled)
-	rl.add_child(cb)
+	var pr := _form_row(n, "Host port", "UDP port used when you host.")
+	var ps := SpinBox.new()
+	ps.min_value = 1024
+	ps.max_value = 65000
+	ps.value = int(settings.port)
+	ps.custom_minimum_size.x = 110
+	ps.value_changed.connect(func(v):
+		settings.port = int(v)
+		_save_settings())
+	pr.add_child(ps)
+	var lk := _card(_page, "Invite links")
+	var lr := _form_row(lk, "godotcoop:// links", "Makes invite links open this app. Current Windows user only.")
+	_btn(lr, "Register links", _register_links, "", "link")
+	var rl := _card(_page, "Relay server")
+	var rs := _form_row(rl, "Run here", "Forward UDP ports %d and %d on your router. On a server, run: GodotCoop.console.exe --headless -- --relay" % [Util.DEFAULT_RELAY_PORT, Util.DEFAULT_RELAY_PORT + 1])
+	_switch(rs, "Run a relay server on this PC (UDP %d)" % Util.DEFAULT_RELAY_PORT, relay != null, _on_relay_toggled)
 	if relay != null:
-		var l := _label(rl, "", "Muted")
+		var l := _label(rl, _relay_stats(), "Muted")
 		l.name = "RelayStats"
-		l.text = _relay_stats()
-	var f := _card(_page, true)
-	_label(f, "Downloaded projects go to", "Subheading")
-	var fr := _hrow(f)
-	_line(fr, String(settings.projects_dir), "", func(t):
+	var f := _card(_page, "Storage")
+	var fr := _form_row(f, "Downloaded projects", "Where projects you join are saved.")
+	var fe := _line(fr, String(settings.projects_dir), "", func(t):
 		settings.projects_dir = t.strip_edges()
 		_save_settings())
+	_btn(fr, "Browse", _browse_projects_dir.bind(fe), "", "folder")
+
+
+func _register_links() -> void:
+	var err := Installer.register_url_scheme()
+	toast("Links registered." if err.is_empty() else err)
+
+
+func _browse_projects_dir(fe: LineEdit) -> void:
+	_pick_folder("Downloaded projects folder", String(settings.projects_dir), _set_projects_dir.bind(fe))
+
+
+func _set_projects_dir(d: String, fe: LineEdit) -> void:
+	settings.projects_dir = d.replace("\\", "/")
+	_save_settings()
+	if is_instance_valid(fe):
+		fe.text = settings.projects_dir
 
 
 func _on_name_changed(t: String) -> void:
 	profile.name = t.strip_edges()
 	Util.save_profile(profile)
-	var ml = find_child("MeLabel", true, false)
-	if ml != null:
-		ml.text = profile.name
+	_refresh_avatar()
 
 
 func _on_relay_toggled(on: bool) -> void:
@@ -1153,7 +1628,7 @@ func _run_relay_cli(args: PackedStringArray) -> void:
 		printerr("Couldn't bind UDP %d" % port)
 		get_tree().quit(1)
 		return
-	print("Godot Co-op relay %s running on UDP %d (+%d). Ctrl+C to stop." % [APP_VERSION, port, port + 1])
+	print("Godot Co-op relay %s running on UDP %d (+%d). Press Ctrl+C to stop." % [APP_VERSION, port, port + 1])
 
 
 # ==================================================================================================
@@ -1181,27 +1656,27 @@ func _process(_delta: float) -> void:
 		var res: Dictionary = _clone_thread.wait_to_finish()
 		_clone_thread = null
 		if not res.get("ok", false):
-			toast("git clone failed - downloading files directly instead.")
+			toast("git clone failed, so the files are being downloaded directly.")
 		_start_file_download()
-	if _toast_label.visible and Util.now_ms() > _toast_until:
-		_toast_label.visible = false
+	if _toast.visible and Util.now_ms() > _toast_until:
+		_toast.visible = false
 	var now := Util.now_ms()
 	if now - _refresh_at > 1000:
 		_refresh_at = now
-		if screen == "session" or (screen == "join" and join_state == "plan" and installs.is_downloading()) or (screen == "versions" and installs.is_downloading()):
+		if screen == "session":
+			var sig := _session_signature()
+			if sig != _status_sig:
+				_status_sig = sig
+				render()
+		elif (screen == "join" and join_state == "plan" and installs.is_downloading()) or (screen == "versions" and installs.is_downloading()):
 			render()
 		elif screen == "settings" and relay != null:
 			var l = find_child("RelayStats", true, false)
 			if l != null:
 				l.text = _relay_stats()
+		_update_chrome()
 	if screen == "join" and join_state == "downloading":
-		var pb = find_child("JoinProgress", true, false)
-		var pl = find_child("JoinProgressLabel", true, false)
-		if pb != null:
-			pb.max_value = max(1, join_total_bytes)
-			pb.value = join_done_bytes
-		if pl != null:
-			pl.text = "%s of %s  ·  %s" % [Util.human_bytes(join_done_bytes), Util.human_bytes(join_total_bytes), join_current]
+		_update_join_progress()
 
 
 func _notification(what: int) -> void:

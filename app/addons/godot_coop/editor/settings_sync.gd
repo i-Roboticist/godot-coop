@@ -63,7 +63,7 @@ func process() -> void:
 	if changed.is_empty() and erased.is_empty():
 		return
 	if not _session().can_edit():
-		plugin.toast("You're a viewer - project setting changes aren't shared.", 1)
+		plugin.toast("You're a viewer, so project setting changes aren't shared.", 1)
 		return
 	_session().send({"t": "proj_set", "set": changed, "erase": erased}, Net.CH_CTRL)
 
@@ -95,7 +95,7 @@ func on_message(m: Dictionary) -> void:
 			var keys := changes.keys() + removed
 			if _is_risky(keys) and not plugin.trust_host:
 				held.append({"by": int(m.get("by", 1)), "set": changes, "erase": removed})
-				plugin.notify("%s changed autoloads / editor plugins - review in the Co-op dock." % _session().peer_name(int(m.get("by", 1))), Color.ORANGE, Callable())
+				plugin.notify("%s changed autoloads or editor plugins. Review it in the Co-op dock." % _session().peer_name(int(m.get("by", 1))), Color.ORANGE, Callable())
 				plugin.refresh_ui()
 				return
 			_apply(changes, removed)

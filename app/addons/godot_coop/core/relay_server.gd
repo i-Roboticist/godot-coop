@@ -41,7 +41,7 @@ func start(p_port: int, bind := "*") -> Error:
 	if err == OK:
 		port = p_port
 		if probe.bind(p_port + 1, bind) != OK:
-			_log("Warning: couldn't open probe port %d - hole punching disabled" % (p_port + 1))
+			_log("Warning: couldn't open probe port %d, so hole punching is off" % (p_port + 1))
 		_log("Relay listening on UDP %d (+%d for hole punching)" % [p_port, p_port + 1])
 	return err
 

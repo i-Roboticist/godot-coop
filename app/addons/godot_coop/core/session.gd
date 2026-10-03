@@ -533,7 +533,7 @@ func _on_relay_state(s: String) -> void:
 				net.relay_join(String(_invite.get("room", "")))
 		"failed", "lost":
 			if is_host:
-				relay_status = "Relay unreachable - retrying"
+				relay_status = "Relay unreachable. Retrying."
 				_relay_retry_ms = Util.now_ms() + 5000
 				_maybe_build_invites()
 
@@ -641,7 +641,7 @@ func _host_packet(conn: Dictionary, ch: int, data: PackedByteArray) -> void:
 			_drop(conn)
 			return
 		if int(m.get("proto", 0)) != Util.PROTOCOL_VERSION:
-			_drop(conn, "Godot Co-op version mismatch - please update.")
+			_drop(conn, "Godot Co-op versions don't match. Please update.")
 			return
 		var iid := String(m.get("iid", ""))
 		var nonce_c = m.get("nonce")
@@ -989,7 +989,7 @@ func _start_reconnect(why: String) -> void:
 	_reconnect_at = Util.now_ms() + delay
 	if net != null:
 		net.stop()
-	_set_state("reconnecting", "%s - retrying in %ds" % [why, delay / 1000])
+	_set_state("reconnecting", "%s. Retrying in %ds." % [why, delay / 1000])
 	_deliver({"t": "disconnected"})
 
 

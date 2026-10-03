@@ -242,7 +242,7 @@ func _build_idle() -> void:
 	_upnp_check.button_pressed = bool(plugin.prefs.use_upnp)
 	_upnp_check.toggled.connect(_set_pref.bind("use_upnp"))
 	_adv_box.add_child(_upnp_check)
-	_note(_adv_box, "Relay server (optional) - lets people connect through any firewall and enables short codes. Run one with: GodotCoop.exe --headless -- --relay")
+	_note(_adv_box, "Relay server (optional): lets people connect through any firewall and enables short codes. Run one with: GodotCoop.exe --headless -- --relay")
 	var rr := _row(_adv_box)
 	_relay_edit = LineEdit.new()
 	_relay_edit.placeholder_text = "relay host (e.g. relay.example.com)"
@@ -330,7 +330,7 @@ func _build_hosting() -> void:
 	_invite_edit.secret = false
 	_hosting.add_child(_invite_edit)
 	var cr := _row(_hosting)
-	_button(cr, "Copy code", func(): _copy(_invite_edit.text, "Invite code copied - send it to your teammate."), "ActionCopy")
+	_button(cr, "Copy code", func(): _copy(_invite_edit.text, "Invite code copied. Send it to your teammate."), "ActionCopy")
 	_button(cr, "Copy link", func(): _copy(Invite.link(_invite_edit.text), "Invite link copied."), "ExternalLink")
 	_weblink_copy = _button(cr, "Copy web link", func(): _copy(Invite.web_link(String(plugin.prefs.web_link_base), _invite_edit.text), "Web link copied."))
 	var sr := _row(_hosting)
@@ -775,7 +775,7 @@ func _refresh_review() -> void:
 			var v := VBoxContainer.new()
 			_review.add_child(v)
 			var l := Label.new()
-			l.text = "%s - %s (from %s)" % [rel, q.reason, s.peer_name(int(q.by))]
+			l.text = "%s: %s (from %s)" % [rel, q.reason, s.peer_name(int(q.by))]
 			l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 			l.custom_minimum_size.x = 120 * _scale
 			v.add_child(l)
@@ -864,7 +864,7 @@ func _join_request_row(parent: Control, req: Dictionary) -> void:
 func show_join_request(req: Dictionary) -> void:
 	var s = _s()
 	var d := AcceptDialog.new()
-	d.title = "Godot Co-op - someone wants to join"
+	d.title = "Godot Co-op: someone wants to join"
 	d.dialog_text = "%s wants to %s.\nGodot %s · connected via %s · invite for %ss" % [req.name, "download the project" if req.mode == "download" else "join your session", req.godot, req.via, req.role]
 	d.ok_button_text = "Let in as editor"
 	d.add_button("Let in as viewer", false, "viewer")
@@ -931,11 +931,11 @@ func _refresh_tools() -> void:
 	else:
 		var holder: int = tr.lock_holder
 		if holder == 0:
-			_note(_tools, "%s - anyone can edit (live)." % tr.path.get_file())
+			_note(_tools, "%s: anyone can edit, live." % tr.path.get_file())
 			if s.can_edit():
 				_button(_tools, "Lock it for just me", func(): s.send({"t": "lock", "path": tr.path, "on": true}, 1), "Lock")
 		elif holder == s.my_pid:
-			_note(_tools, "You have %s locked - others watch live." % tr.path.get_file())
+			_note(_tools, "You have %s locked. Others watch live." % tr.path.get_file())
 			_button(_tools, "Unlock", func(): s.send({"t": "lock", "path": tr.path, "on": false}, 1), "Unlock")
 		else:
 			_note(_tools, "%s has %s locked." % [s.peer_name(holder), tr.path.get_file()])
@@ -1035,7 +1035,7 @@ class Toolbar:
 			sb.set_corner_radius_all(int(11 * k))
 			l.add_theme_stylebox_override("normal", sb)
 			l.add_theme_color_override("font_color", Color.BLACK if sb.bg_color.get_luminance() > 0.6 else Color.WHITE)
-			l.tooltip_text = "%s (%s)%s" % [r.name, r.role, " - you" if int(pid) == s.my_pid else ""]
+			l.tooltip_text = "%s · %s%s" % [r.name, r.role, " · you" if int(pid) == s.my_pid else ""]
 			l.mouse_filter = Control.MOUSE_FILTER_PASS
 			add_child(l)
 		if s.state == "reconnecting":
@@ -1055,5 +1055,5 @@ static func make_toolbar(p) -> Control:
 	t.visible = false
 	t.add_theme_constant_override("separation", 3)
 	t.mouse_filter = Control.MOUSE_FILTER_STOP
-	t.tooltip_text = "Godot Co-op - click to open the Co-op dock"
+	t.tooltip_text = "Godot Co-op: click to open the Co-op dock"
 	return t

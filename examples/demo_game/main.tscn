@@ -32,4 +32,4 @@ offset_left = 20.0
 offset_top = 20.0
 offset_right = 620.0
 offset_bottom = 60.0
-text = "Godot Co-op demo - move with the arrow keys"
+text = "Godot Co-op demo. Move with the arrow keys."

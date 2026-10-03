@@ -630,7 +630,7 @@ func _submit(tr: Tracker, ops: Array) -> void:
 		if Util.now_ms() - tr.warned_readonly > 4000:
 			tr.warned_readonly = Util.now_ms()
 			var why := "You're a viewer in this session" if not s.can_edit() else ("%s has locked this scene" % s.peer_name(tr.lock_holder) if locked_by_other else "You don't have write access to this folder")
-			plugin.toast("%s - your change to %s was undone." % [why, tr.path.get_file()], 1)
+			plugin.toast("%s, so your change to %s was undone." % [why, tr.path.get_file()], 1)
 		return
 	tr.cseq += 1
 	var keys := []
@@ -707,7 +707,7 @@ func on_message(m: Dictionary) -> void:
 				_ack(tr, int(m.get("cseq", 0)))
 				var reason := String(m.get("reason", ""))
 				if reason == "locked":
-					plugin.toast("%s is locked by %s - your change was undone." % [path.get_file(), _session().peer_name(tr.lock_holder)], 1)
+					plugin.toast("%s is locked by %s, so your change was undone." % [path.get_file(), _session().peer_name(tr.lock_holder)], 1)
 				elif reason == "read_only":
 					plugin.toast("You can't edit %s in this session." % path.get_file(), 1)
 				_send({"t": "sc_get", "path": path})

@@ -23,6 +23,6 @@ func _on_peers_changed(_id: int) -> void:
 
 func _update_label() -> void:
 	if _coop != null and _coop.is_active():
-		$Label.text = "%s (%s) - players connected: %d" % [_coop.player_name(), _coop.role(), multiplayer.get_peers().size() + 1]
+		$Label.text = "%s (%s) · players connected: %d" % [_coop.player_name(), _coop.role(), multiplayer.get_peers().size() + 1]
 	else:
-		$Label.text = "Godot Co-op demo - move with the arrow keys"
+		$Label.text = "Godot Co-op demo. Move with the arrow keys."

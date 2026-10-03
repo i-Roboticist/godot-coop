@@ -7,47 +7,49 @@
 <meta name="description" content="Someone invited you to edit a Godot project together.">
 <style>
   :root {
-    --bg: #14171e; --panel: #1c212b; --panel2: #232936; --border: #2c3342;
-    --text: #e8ebf1; --muted: #8d96a8; --accent: #4f8fdc; --accent2: #64a0e6;
+    --bg: #1b1b1b; --panel: #262626; --panel2: #2c2c2c; --border: #3a3a3a; --field: #1c1c1c;
+    --text: #f2f2f2; --muted: #9b9b9b; --accent: #2680eb; --accent2: #378ef0; --outline: #8a8a8a;
   }
   :root[data-theme="light"] {
-    --bg: #f4f6fa; --panel: #ffffff; --panel2: #eef1f6; --border: #d9dee8;
-    --text: #1b2130; --muted: #5d6679; --accent: #3a78c9; --accent2: #2f68b2;
+    --bg: #f5f5f5; --panel: #ffffff; --panel2: #f0f0f0; --border: #d9d9d9; --field: #fafafa;
+    --text: #2c2c2c; --muted: #6e6e6e; --accent: #1473e6; --accent2: #0d66d0; --outline: #6e6e6e;
   }
   @media (prefers-color-scheme: light) {
     :root:not([data-theme="dark"]) {
-      --bg: #f4f6fa; --panel: #ffffff; --panel2: #eef1f6; --border: #d9dee8;
-      --text: #1b2130; --muted: #5d6679; --accent: #3a78c9; --accent2: #2f68b2;
+      --bg: #f5f5f5; --panel: #ffffff; --panel2: #f0f0f0; --border: #d9d9d9; --field: #fafafa;
+      --text: #2c2c2c; --muted: #6e6e6e; --accent: #1473e6; --accent2: #0d66d0; --outline: #6e6e6e;
     }
   }
   * { box-sizing: border-box; }
   body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg);
-         color: var(--text); font: 16px/1.5 "Segoe UI", Inter, Roboto, system-ui, sans-serif; padding: 16px; }
-  .card { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--border);
-          border-radius: 16px; padding: 28px; }
-  h1 { font-size: 26px; margin: 0 0 6px; }
-  p { color: var(--muted); margin: 0 0 18px; }
-  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 20px; font-weight: 650; }
-  .logo { width: 34px; height: 34px; border-radius: 9px; background: linear-gradient(135deg, #4f8fdc, #2f5ea8);
-          display: grid; place-items: center; color: #fff; font-size: 18px; }
-  .btn { display: inline-block; border: 0; border-radius: 10px; padding: 12px 20px; font: inherit; font-weight: 650;
-         cursor: pointer; text-decoration: none; }
+         color: var(--text); font: 14px/1.55 "Segoe UI", "Adobe Clean", Inter, Roboto, system-ui, sans-serif; padding: 16px; }
+  .card { width: min(560px, 100%); background: var(--panel); border-radius: 10px; padding: 32px;
+          box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25); }
+  h1 { font-size: 26px; line-height: 1.25; margin: 0 0 8px; font-weight: 700; }
+  p { color: var(--muted); margin: 0 0 20px; }
+  .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; font-weight: 700; font-size: 15px; }
+  .logo { width: 34px; height: 34px; border-radius: 8px; background: #0a2135; border: 1px solid rgba(79, 179, 255, 0.3);
+          display: grid; place-items: center; color: #4fb3ff; font-size: 14px; font-weight: 700; }
+  .btn { display: inline-flex; align-items: center; height: 32px; border-radius: 16px; padding: 0 16px; font: inherit;
+         font-weight: 700; cursor: pointer; text-decoration: none; border: 2px solid transparent; }
   .primary { background: var(--accent); color: #fff; }
   .primary:hover { background: var(--accent2); }
-  .ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
-  code { display: block; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 12px;
-         font: 13px/1.4 Consolas, "Cascadia Code", monospace; word-break: break-all; margin: 14px 0 4px; }
-  ol { color: var(--muted); padding-left: 20px; margin: 18px 0 0; }
-  .err { color: #ff6b6b; }
-  .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--panel2);
-           border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; opacity: 0; transition: opacity .2s; }
+  .ghost { background: transparent; color: var(--text); border-color: var(--outline); }
+  .ghost:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+  code { display: block; background: var(--field); border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px;
+         font: 12.5px/1.45 Consolas, "Cascadia Code", "Source Code Pro", monospace; word-break: break-all; margin: 18px 0 0; color: var(--muted); }
+  ol { color: var(--muted); padding-left: 20px; margin: 20px 0 0; }
+  li { margin: 4px 0; }
+  .err { color: #e34850; }
+  .toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: #323232; color: #f2f2f2;
+           border-radius: 8px; padding: 10px 18px; opacity: 0; transition: opacity .2s; box-shadow: 0 6px 20px rgba(0,0,0,.4); }
   .toast.show { opacity: 1; }
 </style>
 </head>
 <body>
 <main class="card">
-  <div class="brand"><div class="logo">&#9679;&#9679;</div>Godot Co-op</div>
+  <div class="brand"><div class="logo">Co</div>Godot Co-op</div>
   <div id="ok" hidden>
     <h1>You're invited to <span id="project">a Godot project</span></h1>
     <p>Opening the Godot Co-op app… If nothing happens, you may not have it yet.</p>
@@ -59,7 +61,7 @@
     <ol>
       <li>Install Godot Co-op (ask whoever sent this link where to get it).</li>
       <li>Open it, choose <b>Join a session</b> and paste the invite code.</li>
-      <li>It downloads the project and the right Godot version, then opens it - you're in.</li>
+      <li>It downloads the project and the right Godot version, then opens it. You're in.</li>
     </ol>
   </div>
   <div id="bad" hidden>
