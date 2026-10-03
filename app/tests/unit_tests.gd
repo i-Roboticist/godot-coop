@@ -390,6 +390,14 @@ func test_wire() -> void:
 	unique.size = Vector2(99, 99)
 	var got = rx.from_wire(sender.to_wire(unique), shared_shape)
 	check(got != shared_shape and got is RectangleShape2D and got.size == Vector2(99, 99) and shared_shape.size != Vector2(99, 99), "wire: a resource made unique stays unique")
+	# The first sync of a scene: our objects only have ids we made up locally, so they're adopted
+	# in place (not replaced) when the host's copy names them with its ids.
+	var mine := RectangleShape2D.new()
+	var local_wire := Wire.new()
+	var mine_w = local_wire.to_wire(mine)
+	var hosts_w = Wire.new().to_wire(mine)
+	check(local_wire.from_wire(hosts_w, mine) == mine, "wire adopts a local object under the host's id")
+	check(Wire.same_value(mine_w, hosts_w) and not Util.same(mine_w, hosts_w), "wire compares values ignoring resource ids")
 	# Animations: tracks deleted by the sender must go away here too.
 	var anim := Animation.new()
 	for i in 3:

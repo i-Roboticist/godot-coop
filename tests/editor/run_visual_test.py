@@ -40,7 +40,7 @@ def main() -> int:
     (root / "data_host" / "profile.json").write_text(json.dumps({"name": "Hana", "color": "ff6b6b", "uuid": "hana", "email": "hana@example.com"}))
     (root / "data_client" / "profile.json").write_text(json.dumps({"name": "Cole", "color": "4dabf7", "uuid": "cole", "email": "cole@example.com"}))
     for d in ("data_host", "data_client"):
-        (root / d / "settings.json").write_text(json.dumps({"use_upnp": False, "relay_host": "", "port": 47850 if d == "data_host" else 47851}))
+        (root / d / "settings.json").write_text(json.dumps({"use_upnp": False, "relay_host": "", "include_loopback": True, "port": 47850 if d == "data_host" else 47851}))
 
     base_env = dict(os.environ)
     env_h = dict(base_env, GODOT_COOP_DATA_DIR=str(root / "data_host"), GODOT_COOP_SHARED=str(shared),

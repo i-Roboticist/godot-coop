@@ -70,6 +70,8 @@ var _state_dirty := false
 var _state_saved_ms := 0
 var _hash_cache := {}            # rel -> [mtime, size, hash], so rescans skip unchanged files
 var _replaced: Array = []        # old spellings _place just removed (case-only renames)
+var _last_sent := {}             # joiner: rel -> hash of the last version actually sent to the host
+var _ignores_case := false       # this project's file system treats "A.gd" and "a.gd" as one file
 
 
 func setup(project_root: String, host: bool, my_peer_id: int) -> void:
@@ -79,6 +81,7 @@ func setup(project_root: String, host: bool, my_peer_id: int) -> void:
 	ignore_patterns = Util.read_ignore_patterns(root)
 	Util.ensure_dir(_coop("tmp"))
 	_clean_tmp()
+	_ignores_case = _detect_case_insensitive()
 
 
 func _coop(sub := "") -> String:
@@ -274,11 +277,9 @@ func _on_local_change(rel: String, h: String) -> void:
 func _on_local_missing(rel: String) -> void:
 	if deferred.has(rel) or not base.has(rel):
 		return
-	if _case_insensitive_fs() and FileAccess.file_exists(abs_path(rel)):
-		# Only the case of the name changed ("Player.gd" -> "player.gd"): not a deletion.
-		base.erase(rel)
-		_state_dirty = true
-		return
+	# (A case-only rename shows up as this delete plus an add of the new spelling. Deletes are
+	# only carried out on a file with exactly the deleted spelling, so that's safe everywhere,
+	# and a peer whose file system keeps both spellings apart drops the old one.)
 	var b := String(base[rel])
 	_set_base(rel, "")
 	if is_host:
@@ -291,13 +292,34 @@ func _on_local_missing(rel: String) -> void:
 	local_change.emit(rel, true)
 
 
-static func _case_insensitive_fs() -> bool:
-	return OS.get_name() in ["Windows", "macOS"]
+func _case_insensitive_fs() -> bool:
+	return _ignores_case
+
+
+## Windows, and macOS by default, treat "A.gd" and "a.gd" as the same file; Linux doesn't.
+func _detect_case_insensitive() -> bool:
+	var probe := _coop("tmp").path_join("CaseProbe.tmp")
+	var f := FileAccess.open(probe, FileAccess.WRITE)
+	if f == null:
+		return OS.get_name() in ["Windows", "macOS"]
+	f.close()
+	var result := FileAccess.file_exists(_coop("tmp").path_join("caseprobe.tmp"))
+	DirAccess.remove_absolute(probe)
+	return result
 
 
 ## True if `rel` exists with exactly this spelling (on Windows "player.gd" also opens "Player.gd").
 func _exact_name(rel: String) -> bool:
-	return DirAccess.get_files_at(abs_path(rel).get_base_dir()).has(rel.get_file())
+	return _names_in(abs_path(rel).get_base_dir()).has(rel.get_file())
+
+
+## File names in a folder, hidden ones (".gitignore") included.
+static func _names_in(dir: String) -> PackedStringArray:
+	var da := DirAccess.open(dir)
+	if da == null:
+		return PackedStringArray()
+	da.include_hidden = true
+	return da.get_files()
 
 
 func _remote_peers() -> Array:
@@ -321,6 +343,7 @@ func begin_sync(preview := false) -> void:
 		if not files.has(rel) and is_synced_path(rel):
 			files[rel] = ["", String(pending_up[rel])]
 	_syncing = not preview
+	_last_sent.clear()
 	send_fn.call(1, {"t": "sync_begin", "files": files, "preview": preview, "project_godot": manage_project_godot})
 
 
@@ -437,7 +460,7 @@ func _client_handle_plan(msg: Dictionary) -> void:
 			_set_base(rel, _disk_hash(rel))
 			pending_up[rel] = was
 			uploading[rel] = true
-			queue_put(1, rel, my_id, was)
+			queue_put(1, rel, my_id, was, live_fn.is_valid() and live_fn.call(rel))
 	for rel in msg.get("host_delete", []):
 		if typeof(rel) == TYPE_STRING:
 			_set_base(rel, "")
@@ -475,8 +498,17 @@ func queue_put(dest: int, rel: String, by: int, base_hash: String, live := false
 		for i in q.queue.size():
 			var j: Dictionary = q.queue[i]
 			if j.kind == "put" and j.rel == main_rel:
-				q.queue.insert(i, job)
-				return
+				# Not ahead of a confirmation queued behind it: that ordering tells the receiver
+				# which version the host ended up with.
+				var later_msg := false
+				for k in range(i + 1, q.queue.size()):
+					if q.queue[k].kind == "msg":
+						later_msg = true
+						break
+				if not later_msg:
+					q.queue.insert(i, job)
+					return
+				break
 	q.queue.append(job)
 
 
@@ -573,6 +605,11 @@ func _start_put(dest: int, q: Dictionary, job: Dictionary) -> void:
 		return
 	var h := FileAccess.get_sha256(src)
 	_xid += 1
+	if not is_host and dest == 1 and int(job.by) == my_id:
+		# The version this one replaces, as far as the host knows: the last one we sent (the queue
+		# may have dropped versions that never left), or the one we started from.
+		job.base = String(_last_sent.get(job.rel, pending_up.get(job.rel, job.base)))
+		_last_sent[job.rel] = h
 	if size <= SMALL:
 		var data := FileAccess.get_file_as_bytes(src)
 		send_fn.call(dest, {"t": "file_put", "xid": _xid, "rel": job.rel, "hash": h, "data": data, "by": job.by, "base": job.base, "live": bool(job.get("live", false))})
@@ -634,8 +671,19 @@ func handle(from: int, msg: Dictionary) -> void:
 					_state_dirty = true
 		"file_reject":
 			if not is_host:
-				pending_up.erase(String(msg.get("rel", "")))
-				rejected.emit(String(msg.get("rel", "")), String(msg.get("reason", "")))
+				var rel := String(msg.get("rel", ""))
+				pending_up.erase(rel)
+				if msg.get("backup", false) and Util.is_safe_rel_path(rel):
+					# Our version didn't make it and is about to be put back: keep a copy.
+					_save_conflict_copy(rel, abs_path(rel), "mine")
+				rejected.emit(rel, String(msg.get("reason", "")))
+		"file_retry":
+			# Our upload got damaged on the way: send it again.
+			if not is_host:
+				var rel := String(msg.get("rel", ""))
+				if pending_up.has(rel) and is_synced_path(rel) and FileAccess.file_exists(abs_path(rel)):
+					_last_sent.erase(rel)
+					queue_put(1, rel, my_id, String(pending_up[rel]), live_fn.is_valid() and live_fn.call(rel))
 
 
 ## On the host, the sender is always the author (a client can't claim to be someone else).
@@ -671,6 +719,8 @@ func _recv_put(from: int, msg: Dictionary) -> void:
 	if Util.sha256_hex(data) != String(msg.get("hash", "")):
 		if not is_host:
 			send_fn.call(1, {"t": "file_get", "rels": [rel]})
+		else:
+			send_fn.call(from, {"t": "file_retry", "rel": rel})
 		return
 	var tmp := _coop("tmp").path_join("%d_%s.part" % [from, Util.random_hex(4)])
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
@@ -729,11 +779,15 @@ func _recv_end(from: int, msg: Dictionary) -> void:
 			DirAccess.remove_absolute(t.tmp)
 		if t.has("rel") and not is_host:
 			send_fn.call(1, {"t": "file_get", "rels": [t.rel]})
+		elif t.has("rel"):
+			send_fn.call(from, {"t": "file_retry", "rel": t.rel})
 		return
 	if FileAccess.get_sha256(t.tmp) != t.hash:
 		DirAccess.remove_absolute(t.tmp)
 		if not is_host:
 			send_fn.call(1, {"t": "file_get", "rels": [t.rel]})
+		else:
+			send_fn.call(from, {"t": "file_retry", "rel": t.rel})
 		return
 	_commit(from, t.rel, t.tmp, t.hash, t.by, t.size, bool(t.get("live", false)), String(t.get("base", "")))
 
@@ -836,6 +890,10 @@ func _accept(from: int, rel: String, tmp: String, h: String, by: int, live := fa
 		_replaced.clear()
 		if not _place(rel, tmp):
 			rejected.emit(rel, "it couldn't be written here (is it open in another program?)")
+			if is_host and from != my_id:
+				send_fn.call(from, {"t": "file_reject", "rel": rel, "reason": "The host couldn't write it (is it open in another program there?).", "backup": true})
+				if base.has(rel):
+					queue_put(from, rel, 1, "")
 			return
 		_set_base(rel, h)
 		if is_host:
@@ -868,7 +926,7 @@ func _place(rel: String, tmp: String) -> bool:
 		# A case-only rename ("Player.gd" -> "player.gd") on a file system that ignores case:
 		# remove the old spelling first, or the file would keep it.
 		var want := rel.get_file()
-		for f in DirAccess.get_files_at(dir):
+		for f in _names_in(dir):
 			if f != want and f.to_lower() == want.to_lower():
 				DirAccess.remove_absolute(dir.path_join(f))
 				var old := (rel.get_base_dir() + "/" + f).trim_prefix("/")

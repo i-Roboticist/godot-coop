@@ -179,6 +179,13 @@ func start(plugin) -> void:
 	check("cycle_converges", tree_text(main) == read_shared("host_tree.txt"), "host %s / client %s" % [read_shared("host_tree.txt"), tree_text(main)])
 	check("reconcile_keeps_nodes", is_instance_valid(player) and is_instance_valid(label) and main.find_child("Player", true, false) == player and main.find_child("Label", true, false) == label)
 
+	# S8. The host deletes Wall and adds Ruby in the same frame: same sibling order here.
+	mark("client_ready_s8")
+	await wait_mark("host_order_written")
+	await wait(0.5)
+	check("delete_and_add_keep_sibling_order", ",".join(ordered_names(main)) == read_shared("host_order.txt"), "host %s / client %s" % [read_shared("host_order.txt"), ",".join(ordered_names(main))])
+	mark("client_checked_s8")
+
 	# S7. Leave main.tscn to the host, then change and save gem.tscn, which main.tscn instances.
 	await wait_mark("host_instanced_gem")
 	ok = await until(func(): return main.get_node_or_null("Gem") != null, 10)

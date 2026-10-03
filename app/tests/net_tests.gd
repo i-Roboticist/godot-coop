@@ -216,6 +216,25 @@ func _init() -> void:
 	pump(4000)
 	check(read(host_dir, "case.txt") == "case test" and read(ed2_dir, "case.txt") == "case test", "case-only rename keeps the file (%s)" % str(DirAccess.get_files_at(host_dir)))
 
+	# Deleting a dotfile reaches joiners (hidden files count when checking the exact name).
+	write(host_dir, ".hidden_test", "x")
+	check(pump(5000, func(): return read(ed2_dir, ".hidden_test") == "x"), "dotfile arrives")
+	DirAccess.remove_absolute(host_dir.path_join(".hidden_test"))
+	check(pump(5000, func(): return not FileAccess.file_exists(ed2_dir.path_join(".hidden_test"))), "dotfile deletion reaches joiners")
+	pump(1500)
+	check(not FileAccess.file_exists(host_dir.path_join(".hidden_test")), "and doesn't come back")
+
+	# Saving twice in a row (the second upload leaves before the host confirms the first) isn't a
+	# conflict with yourself.
+	var copies_before := host.files.conflict_backups.size()
+	write(ed2_dir, "twice.txt", "first")
+	ed2.files.check_path("twice.txt")
+	pump(60)
+	write(ed2_dir, "twice.txt", "second, a little longer")
+	ed2.files.check_path("twice.txt")
+	check(pump(5000, func(): return read(host_dir, "twice.txt") == "second, a little longer"), "two quick saves arrive")
+	check(host.files.conflict_backups.size() == copies_before, "no conflict copy for your own two saves (%d new)" % (host.files.conflict_backups.size() - copies_before))
+
 	# project.godot from a joiner is refused (settings sync separately, with review for autoloads).
 	var pg_before := read(host_dir, "project.godot")
 	write(ed2_dir, "project.godot", "config_version=5\n[autoload]\nEvil=\"*res://evil.gd\"\n")
@@ -343,31 +362,43 @@ func _init() -> void:
 	# --- Reconnect: drop ed2's network and let it come back ------------------------------------------
 	# ed2 alone has a script open with an edit in it. When it drops, the host keeps the document so
 	# the reconnect resumes it (replaying what was missed) instead of starting over from the file.
+	write(host_dir, "solo.gd", "extends Node\n")
+	check(pump(5000, func(): return read(ed2_dir, "solo.gd") == "extends Node\n"), "solo script arrives")
 	tx[ed2.my_pid].clear()
-	ed2.send({"t": "tx_open", "path": "res://tools/editor_tool.gd"}, Session.CH_LIVE)
-	check(pump(3000, func(): return tx[ed2.my_pid].any(func(m): return m.t == "tx_state" and m.path == "res://tools/editor_tool.gd")), "joiner opens a script only it is editing")
-	var solo: Dictionary = tx[ed2.my_pid].filter(func(m): return m.t == "tx_state" and m.path == "res://tools/editor_tool.gd")[0]
+	ed2.send({"t": "tx_open", "path": "res://solo.gd"}, Session.CH_LIVE)
+	check(pump(3000, func(): return tx[ed2.my_pid].any(func(m): return m.t == "tx_state" and m.path == "res://solo.gd")), "joiner opens a script only it is editing")
+	var solo: Dictionary = tx[ed2.my_pid].filter(func(m): return m.t == "tx_state" and m.path == "res://solo.gd")[0]
 	var solo_op: Array = OT.diff(String(solo.text), String(solo.text) + "# solo edit\n").to_array()
-	var solo_msg := {"t": "tx_op", "path": "res://tools/editor_tool.gd", "rev": int(solo.rev), "op": solo_op, "cseq": 1, "cid": "solo", "epoch": String(solo.epoch)}
+	var solo_msg := {"t": "tx_op", "path": "res://solo.gd", "rev": int(solo.rev), "op": solo_op, "cseq": 1, "cid": "solo", "epoch": String(solo.epoch)}
 	ed2.send(solo_msg, Session.CH_LIVE)
-	check(pump(3000, func(): return host.docs.texts.has("res://tools/editor_tool.gd") and host.docs.texts["res://tools/editor_tool.gd"].text.contains("# solo edit")), "solo edit applied")
+	check(pump(3000, func(): return host.docs.texts.has("res://solo.gd") and host.docs.texts["res://solo.gd"].text.contains("# solo edit")), "solo edit applied")
 	var ed2_pid := ed2.my_pid
 	# A change saved just before the connection drops (still queued, never sent) must reach the
 	# host after the reconnect, not be overwritten by the host's copy.
 	write(ed2_dir, "offline.txt", "made just before the drop")
 	ed2.files.check_path("offline.txt")
+	ed2.files.live_fn = func(rel): return rel == "solo.gd"
 	ed2.net.stop()
 	ed2._conn = null
 	ed2._start_reconnect("test drop")
+	# While offline, ed2 edits and saves the script it has open live. The upload after the
+	# reconnect says it's live, so the host doesn't merge it on top of the edit itself.
+	var solo_text := String(solo.text) + "# solo edit\n"
+	write(ed2_dir, "solo.gd", solo_text + "# offline edit\n")
 	check(pump(20000, func(): return ed2.state == "connected"), "joiner reconnects automatically")
 	check(ed2.my_pid == ed2_pid, "reconnect keeps the same peer id")
-	check(host.docs.texts.has("res://tools/editor_tool.gd"), "host kept the dropped joiner's document")
+	check(host.docs.texts.has("res://solo.gd"), "host kept the dropped joiner's document")
 	tx[ed2.my_pid].clear()
-	ed2.send({"t": "tx_open", "path": "res://tools/editor_tool.gd", "epoch": String(solo.epoch), "rev": int(solo.rev)}, Session.CH_LIVE)
+	ed2.send({"t": "tx_open", "path": "res://solo.gd", "epoch": String(solo.epoch), "rev": int(solo.rev)}, Session.CH_LIVE)
 	check(pump(3000, func(): return tx[ed2.my_pid].any(func(m): return m.t == "tx_state" and m.since is Array and m.epoch == solo.epoch)), "reconnect resumes the same document with a replay")
 	ed2.send(solo_msg, Session.CH_LIVE)  # resent after the reconnect, as the client does
 	pump(500)
-	check(host.docs.texts["res://tools/editor_tool.gd"].text.count("# solo edit") == 1, "a resent edit isn't applied twice")
+	check(host.docs.texts["res://solo.gd"].text.count("# solo edit") == 1, "a resent edit isn't applied twice")
+	check(pump(6000, func(): return read(host_dir, "solo.gd").contains("# offline edit")), "the offline save reaches the host")
+	ed2.send({"t": "tx_op", "path": "res://solo.gd", "rev": int(solo.rev) + 1, "op": OT.diff(solo_text, solo_text + "# offline edit\n").to_array(), "cseq": 2, "cid": "solo", "epoch": String(solo.epoch)}, Session.CH_LIVE)
+	pump(800)
+	check(host.docs.texts["res://solo.gd"].text.count("# offline edit") == 1, "an offline save plus the offline edit appear once (%s)" % host.docs.texts["res://solo.gd"].text.c_escape())
+	ed2.files.live_fn = Callable()
 	write(host_dir, "after_reconnect.txt", "yes")
 	check(pump(6000, func(): return read(ed2_dir, "after_reconnect.txt") == "yes"), "sync works after reconnect")
 	check(pump(6000, func(): return read(host_dir, "offline.txt") == "made just before the drop"), "an upload cut off by the drop arrives after the reconnect")

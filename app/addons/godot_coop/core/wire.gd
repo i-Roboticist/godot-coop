@@ -23,6 +23,7 @@ var blocked_code := false         # set when from_wire skipped one of those
 
 var _res_by_rid := {}
 var _rid_by_obj := {}
+var _shared_rids := {}            # ids that came from the wire (known to peers), vs made up locally
 
 
 func rid_for(res: Resource) -> String:
@@ -35,10 +36,35 @@ func rid_for(res: Resource) -> String:
 	return rid
 
 
-func _register(rid: String, res: Resource) -> void:
+func _register(rid: String, res: Resource, take_over := false) -> void:
 	_res_by_rid[rid] = res
-	if not _rid_by_obj.has(res.get_instance_id()):
+	_shared_rids[rid] = true
+	if take_over or not _rid_by_obj.has(res.get_instance_id()):
 		_rid_by_obj[res.get_instance_id()] = rid
+
+
+## Equal values, treating embedded resources as equal when only their ids differ (each editor
+## makes up its own ids for resources it hasn't exchanged yet).
+static func same_value(a, b) -> bool:
+	if typeof(a) != typeof(b):
+		return false
+	if a is Dictionary:
+		if a.has("$sub") and b.has("$sub"):
+			return String(a.get("cls", "")) == String(b.get("cls", "")) and same_value(a.get("p", {}), b.get("p", {}))
+		if a.size() != b.size():
+			return false
+		for k in a:
+			if not b.has(k) or not same_value(a[k], b[k]):
+				return false
+		return true
+	if a is Array:
+		if a.size() != b.size():
+			return false
+		for i in a.size():
+			if not same_value(a[i], b[i]):
+				return false
+		return true
+	return a == b
 
 
 static func is_external(res: Resource) -> bool:
@@ -171,13 +197,13 @@ func _sub_from_wire(w: Dictionary, current):
 	var res: Resource = _res_by_rid.get(rid)
 	if res != null and res.get_class() != cls:
 		res = null
-	# Adopt the object already in the slot (the first sync of an existing scene), unless it's
-	# already known under another id: then other slots share it and this one was made unique.
+	# Adopt the object already in the slot (the first sync of an existing scene), unless peers
+	# already know it under another id: then other slots share it and this one was made unique.
 	if res == null and current is Resource and current.get_class() == cls and not is_external(current):
 		var known = _rid_by_obj.get(current.get_instance_id())
-		if known == null or known == rid:
+		if known == null or known == rid or not _shared_rids.has(known):
 			res = current
-			_register(rid, res)
+			_register(rid, res, true)
 	if res == null:
 		if not ClassDB.class_exists(cls) or not ClassDB.can_instantiate(cls) or not ClassDB.is_parent_class(cls, "Resource"):
 			return null

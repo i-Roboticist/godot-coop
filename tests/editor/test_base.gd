@@ -176,3 +176,10 @@ func tree_text(root: Node) -> String:
 			out.append("%s<%s" % [n.name, n.get_parent().name])
 	out.sort()
 	return ",".join(out)
+
+
+func ordered_names(n: Node) -> Array:
+	var out := []
+	for c in n.get_children():
+		out.append(String(c.name))
+	return out

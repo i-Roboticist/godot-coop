@@ -34,7 +34,8 @@ static func install_plugin(project_dir: String) -> String:
 ## running from source reads the addon folder directly.
 static func _payload_files() -> Dictionary:
 	var out := {}
-	if FileAccess.file_exists(PAYLOAD_ZIP):
+	# (From source, a zip left over from an earlier build would install an outdated plugin.)
+	if OS.has_feature("template") and FileAccess.file_exists(PAYLOAD_ZIP):
 		var z := ZIPReader.new()
 		if z.open(PAYLOAD_ZIP) == OK:
 			for f in z.get_files():

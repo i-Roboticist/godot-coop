@@ -406,18 +406,20 @@ func _refresh_instancing_scenes() -> void:
 		return
 	var changed := _changed_scenes.keys()
 	_changed_scenes.clear()
-	for path in changed:
-		ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_REPLACE)
+	# Only scenes instanced in open scenes matter (a project's initial sync can bring hundreds).
+	var reload := {}
+	var refreshed := {}
 	for root in EditorInterface.get_open_scene_roots():
 		if root == null or root.scene_file_path.is_empty() or changed.has(root.scene_file_path):
 			continue
-		var uses := false
 		for n in root.find_children("*", "", true, false):
 			if n.owner == root and changed.has(n.scene_file_path):
-				uses = true
-				break
-		if uses:
-			EditorInterface.reload_scene_from_path(root.scene_file_path)
+				if not refreshed.has(n.scene_file_path):
+					refreshed[n.scene_file_path] = true
+					ResourceLoader.load(n.scene_file_path, "", ResourceLoader.CACHE_MODE_REPLACE)
+				reload[root.scene_file_path] = true
+	for path in reload:
+		EditorInterface.reload_scene_from_path(path)
 
 
 func _is_open_in_editor(rel: String) -> bool:

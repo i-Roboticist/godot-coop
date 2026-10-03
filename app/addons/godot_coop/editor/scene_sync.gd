@@ -65,6 +65,9 @@ var _script_props := {}        # script instance id -> {name: true}
 var _instance_base := {}       # scene path -> {"props": {}, "groups": []}
 var _signals_connected := false
 var _churn := {}               # "id/prop" -> {"v": last value seen, "last": ms, "n": changes in a row}
+## Batch numbers for every scene come from here and never restart (not even with the editor), so
+## the host's "last batch I got from you" can't be mistaken for a newer batch after a reload.
+var _next_cseq := int(Time.get_unix_time_from_system() * 1000.0)
 
 
 func _session():
@@ -336,7 +339,8 @@ func _instance_info(path: String) -> Dictionary:
 		return _instance_base[path]
 	var info := {"props": {}, "groups": []}
 	if ResourceLoader.exists(path):
-		var ps = ResourceLoader.load(path)
+		# Read from disk, not the cache: after a teammate's save the cache can still hold the old one.
+		var ps = ResourceLoader.load(path, "", ResourceLoader.CACHE_MODE_IGNORE)
 		if ps is PackedScene:
 			var st: SceneState = ps.get_state()
 			if st.get_node_count() > 0:
@@ -640,7 +644,9 @@ func _diff_structure(tr: Tracker) -> Array:
 	for pid in local_order:
 		var want: Array = local_order[pid]
 		var have: Array = sim.get(pid, [])
-		if have != want:
+		# Where something was deleted, positions in the adds and moves above were counted without
+		# it while the host still had it: send the order again.
+		if have != want or gone.has(pid):
 			for i in want.size():
 				ops.append({"k": "move", "id": want[i], "p": pid, "si": i})
 	ops.append_array(renames)
@@ -739,7 +745,8 @@ func _submit(tr: Tracker, ops: Array) -> void:
 			var why := "You're a viewer in this session" if not s.can_edit() else ("%s has locked this scene" % s.peer_name(tr.lock_holder) if locked_by_other else "You don't have write access to this folder")
 			plugin.toast("%s, so your change to %s was undone." % [why, tr.path.get_file()], 1)
 		return
-	tr.cseq += 1
+	_next_cseq += 1
+	tr.cseq = _next_cseq
 	var keys := []
 	for op in ops:
 		for k in _op_keys(op):
@@ -1048,7 +1055,10 @@ func _trust_code() -> bool:
 func _warn_blocked_code(tr: Tracker) -> void:
 	if tr.wire.blocked_code and not tr.warned_code:
 		tr.warned_code = true
-		plugin.toast("A teammate's change to %s includes a built-in @tool script, which would run in your editor. It was left out. Turn on trusting the host's editor scripts to allow it." % tr.path.get_file(), 1)
+		if _session() != null and _session().is_host:
+			plugin.toast("A teammate's change to %s includes a built-in @tool script, which would run in your editor. It was left out; when they save the scene, it comes to the Co-op dock's Review tab." % tr.path.get_file(), 1)
+		else:
+			plugin.toast("A teammate's change to %s includes a built-in @tool script, which would run in your editor. It was left out. Turn on trusting the host's editor scripts to allow it." % tr.path.get_file(), 1)
 
 
 static func _inst_missing(op: Dictionary) -> bool:
@@ -1345,7 +1355,7 @@ func _reconcile(tr: Tracker, list: Array) -> bool:
 		var diff := {}
 		var reset := []
 		for k in props:
-			if not current.has(k) or not Util.same(current[k], props[k]):
+			if not current.has(k) or not Wire.same_value(current[k], props[k]):
 				diff[k] = props[k]
 		for k in current:
 			if not props.has(k):

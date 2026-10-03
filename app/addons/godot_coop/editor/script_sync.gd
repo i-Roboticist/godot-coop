@@ -84,9 +84,10 @@ func session_resumed() -> void:
 		_session().send(msg, Net.CH_LIVE)
 
 
-## True while `path` is a live document here, so a save of it adds nothing the host hasn't got.
+## True while `path` is open as a live document here (even while reconnecting): its edits reach
+## the host as live operations, so a save of it must not be merged into the document again.
 func is_live(path: String) -> bool:
-	return trackers.has(path) and trackers[path].ready
+	return trackers.has(path)
 
 
 func is_open(path: String) -> bool:

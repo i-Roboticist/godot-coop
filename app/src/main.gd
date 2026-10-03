@@ -946,7 +946,7 @@ func _start_hosting() -> void:
 		"mode": "host", "profile": profile,
 		"settings": {"port": int(settings.port), "use_upnp": bool(settings.use_upnp), "relay_host": String(settings.relay_host),
 			"relay_port": int(settings.relay_port), "auto_accept_viewers": bool(settings.auto_accept_viewers),
-			"web_link_base": String(settings.web_link_base)},
+			"web_link_base": String(settings.web_link_base), "include_loopback": bool(settings.get("include_loopback", false))},
 	})
 	var pid := Installer.launch_editor(exe, host_dir)
 	if pid <= 0:

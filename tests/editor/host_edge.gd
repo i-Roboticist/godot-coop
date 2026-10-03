@@ -116,6 +116,18 @@ func start(plugin) -> void:
 	write_shared("host_tree.txt", tree_text(main))
 	mark("host_tree_written")
 
+	# S8. Delete a node near the front and add one at the end in the same frame: the sibling order
+	#     must match.
+	await wait_mark("client_ready_s8")
+	delete_node(main.get_node("Wall"))
+	var ruby := Node2D.new()
+	ruby.name = "Ruby"
+	add_node(main, ruby, main)
+	await wait(1.5)
+	write_shared("host_order.txt", ",".join(ordered_names(main)))
+	mark("host_order_written")
+	await wait_mark("client_checked_s8")
+
 	# S7. We have main.tscn open alone, with an unsaved live edit, and a teammate saves a scene it
 	#     instances. The reload that refreshes the instance must not lose the edit.
 	var gem_root := Sprite2D.new()

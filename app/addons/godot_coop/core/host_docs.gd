@@ -370,7 +370,8 @@ func on_file_changed(rel: String, by: int, live := false, text = null) -> void:
 	disk = disk.replace("\r\n", "\n")
 	var base: String = doc.disk_text
 	doc.disk_text = disk
-	if live or disk == base or disk == doc.text:
+	# A document opened before its file got here: the opener sends its own text (see "missing").
+	if live or disk == base or disk == doc.text or (doc.missing and doc.rev == 0):
 		return
 	var merged := OT.merge3(base, doc.text, disk)
 	if merged == doc.text:
