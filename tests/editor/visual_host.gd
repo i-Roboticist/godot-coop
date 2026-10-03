@@ -24,6 +24,13 @@ func start(plugin) -> void:
 		await finish()
 		return
 	P.session.join_request.connect(_on_join_request)
+	# Diagnostics: what arrives and when the selection changes (to explain a lost selection).
+	P.session.files.file_applied.connect(func(rel, by, deleted): say("file applied: %s by %d%s" % [rel, by, " (deleted)" if deleted else ""]))
+	EditorInterface.get_selection().selection_changed.connect(func():
+		var names := []
+		for n in EditorInterface.get_selection().get_selected_nodes():
+			names.append(String(n.name))
+		say("selection now: %s" % str(names)))
 	var f := FileAccess.open(shared.path_join("invite.txt"), FileAccess.WRITE)
 	f.store_string(P.session.get_invite("editor").code)
 	f.close()
