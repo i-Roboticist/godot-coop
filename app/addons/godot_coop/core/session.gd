@@ -162,6 +162,7 @@ func host(p_project_dir: String, p_profile: Dictionary, p_settings := {}) -> Err
 	files.can_write_fn = _can_write
 	files.peers_fn = _synced_peers
 	files.file_applied.connect(_on_host_file_applied)
+	files.file_received.connect(_on_host_file_received)
 	files.local_change.connect(_on_host_local_change)
 	docs = HostDocs.new()
 	docs.project_dir = project_dir
@@ -478,13 +479,18 @@ static func _noteworthy(rel: String) -> bool:
 
 
 func _on_host_file_applied(rel: String, by: int, deleted: bool) -> void:
-	docs.on_file_changed(rel, by)
 	if by != 1 and _peers.has(by) and _noteworthy(rel):
 		_activity(by, ("deleted " if deleted else "updated ") + rel, {"type": "file", "path": Util.rel_to_res(rel)}, "file:" + rel)
 
 
+func _on_host_file_received(rel: String, by: int, src: String, live: bool) -> void:
+	if docs.texts.has(Util.rel_to_res(rel)):
+		docs.on_file_changed(rel, by, live, FileAccess.get_file_as_string(src))
+
+
 func _on_host_local_change(rel: String, deleted: bool) -> void:
-	docs.on_file_changed(rel, 1)
+	if not deleted:
+		docs.on_file_changed(rel, 1, docs.is_watching(1, rel))
 	if not _noteworthy(rel):
 		return
 	_activity(1, ("deleted " if deleted else "saved ") + rel, {"type": "file", "path": Util.rel_to_res(rel)}, "file:" + rel)
@@ -1084,6 +1090,7 @@ func _poll_host() -> void:
 			upnp_status = "UPnP: " + String(r.get("why", "unavailable"))
 	if not invites_ready:
 		_maybe_build_invites()
+	docs.prune()
 	if _relay_retry_ms > 0 and Util.now_ms() > _relay_retry_ms:
 		_relay_retry_ms = 0
 		if net.relay_peer == null:

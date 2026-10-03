@@ -16,6 +16,7 @@ const MAX_UNDO := 400
 
 var rev := 0
 var epoch := ""
+var cid := ""                # identifies this client instance, so a reopened file doesn't reuse old cseqs
 var outstanding: RefCounted = null
 var outstanding_cseq := 0
 var buffer: RefCounted = null
@@ -26,6 +27,10 @@ var redo_stack: Array = []
 var _undo_mode := 0          # 0 normal, 1 undoing, 2 redoing
 var _last_local_ms := 0
 var _last_kind := ""
+
+
+func _init() -> void:
+	cid = "%08x%04x" % [randi(), randi() & 0xffff]
 
 
 func reset(p_rev: int, p_epoch: String) -> void:
@@ -39,6 +44,11 @@ func reset(p_rev: int, p_epoch: String) -> void:
 
 func has_pending() -> bool:
 	return outstanding != null
+
+
+## True when a broadcast op is our own outstanding one coming back (the host's acknowledgement).
+func is_own(by: int, me: int, op_cid: String, op_cseq: int) -> bool:
+	return outstanding != null and by == me and op_cid == cid and op_cseq == outstanding_cseq
 
 
 ## A local edit happened (already applied to the local document). `before` is the text before it.

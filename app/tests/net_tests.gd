@@ -214,6 +214,48 @@ func _init() -> void:
 	var doc = host.docs.texts.get("res://player.gd")
 	check(doc != null and doc.text.begins_with("# A\n") and doc.text.ends_with("# B\n"), "concurrent edits both survive (transformed)")
 
+	# Reopening a script starts a new client whose sequence numbers start over: its first edit must
+	# not be dropped as a duplicate of the old client's.
+	ed1.send({"t": "tx_close", "path": "res://player.gd"}, Session.CH_LIVE)
+	tx[ed1.my_pid].clear()
+	ed1.send({"t": "tx_open", "path": "res://player.gd"}, Session.CH_LIVE)
+	check(pump(3000, func(): return tx[ed1.my_pid].any(func(m): return m.t == "tx_state")), "reopened script gets the document")
+	var st2: Dictionary = tx[ed1.my_pid].filter(func(m): return m.t == "tx_state")[0] if tx[ed1.my_pid].any(func(m): return m.t == "tx_state") else {}
+	var t2 := String(st2.get("text", ""))
+	ed1.send({"t": "tx_op", "path": "res://player.gd", "rev": int(st2.get("rev", 0)), "op": OT.diff(t2, t2 + "# after reopen\n").to_array(), "cseq": 1, "cid": "reopened", "epoch": epoch}, Session.CH_LIVE)
+	check(pump(3000, func(): return doc.text.contains("# after reopen")), "first edit after reopening is applied")
+
+	# A live editor saves while one of its edits is still on its way: the save must not be merged
+	# into the document as well (that duplicated text), and the edit must land once.
+	ed1.files.live_fn = func(rel): return rel == "player.gd"
+	var live_rev: int = doc.rev
+	var live_text: String = doc.text
+	var with_edit := live_text + "# saved before sent\n"
+	write(dl_dir, "player.gd", with_edit)
+	ed1.files.check_path("player.gd")
+	check(pump(4000, func(): return read(host_dir, "player.gd") == with_edit), "live save reaches the host's disk")
+	check(not doc.text.contains("# saved before sent"), "live save isn't merged into the document")
+	ed1.send({"t": "tx_op", "path": "res://player.gd", "rev": live_rev, "op": OT.diff(live_text, with_edit).to_array(), "cseq": 2, "cid": "reopened", "epoch": epoch}, Session.CH_LIVE)
+	check(pump(3000, func(): return doc.text.contains("# saved before sent")), "the edit itself arrives")
+	check(doc.text.count("# saved before sent") == 1, "and appears once")
+	ed1.files.live_fn = Callable()
+
+	# Someone without the file open live (an external editor) changes it: merged in, live edits kept.
+	check(pump(4000, func(): return read(ed2_dir, "player.gd") == read(host_dir, "player.gd")), "the save reaches the other joiner")
+	var unsaved_rev: int = doc.rev
+	var unsaved_text: String = doc.text
+	ed1.send({"t": "tx_op", "path": "res://player.gd", "rev": unsaved_rev, "op": OT.diff(unsaved_text, unsaved_text + "# live, not saved\n").to_array(), "cseq": 3, "cid": "reopened", "epoch": epoch}, Session.CH_LIVE)
+	check(pump(3000, func(): return doc.text.contains("# live, not saved")), "a live edit after the save")
+	write(ed2_dir, "player.gd", "# external edit\n" + read(ed2_dir, "player.gd"))
+	check(pump(4000, func(): return doc.text.begins_with("# external edit\n")), "external edit merged into the live document")
+	check(doc.text.contains("# live, not saved") and doc.text.contains("# after reopen") and doc.text.count("# saved before sent") == 1, "live edits survive the external edit (%s)" % doc.text.c_escape())
+
+	# A script just created on a joiner: the host doesn't have it yet, so the opener's text wins.
+	tx[ed2.my_pid].clear()
+	ed2.send({"t": "tx_open", "path": "res://brand_new.gd"}, Session.CH_LIVE)
+	check(pump(3000, func(): return tx[ed2.my_pid].any(func(m): return m.t == "tx_state" and m.path == "res://brand_new.gd" and m.get("missing", false))), "opening a file the host doesn't have yet says so")
+	ed2.send({"t": "tx_close", "path": "res://brand_new.gd"}, Session.CH_LIVE)
+
 	# --- Live scene doc --------------------------------------------------------------------------
 	var sc := {1: [], ed1.my_pid: []}
 	for s in [host, ed1]:
@@ -241,12 +283,29 @@ func _init() -> void:
 	check(ed2.activity_log.size() > 3, "activity feed populated (%d)" % ed2.activity_log.size())
 
 	# --- Reconnect: drop ed2's network and let it come back ------------------------------------------
+	# ed2 alone has a script open with an edit in it. When it drops, the host keeps the document so
+	# the reconnect resumes it (replaying what was missed) instead of starting over from the file.
+	tx[ed2.my_pid].clear()
+	ed2.send({"t": "tx_open", "path": "res://tools/editor_tool.gd"}, Session.CH_LIVE)
+	check(pump(3000, func(): return tx[ed2.my_pid].any(func(m): return m.t == "tx_state" and m.path == "res://tools/editor_tool.gd")), "joiner opens a script only it is editing")
+	var solo: Dictionary = tx[ed2.my_pid].filter(func(m): return m.t == "tx_state" and m.path == "res://tools/editor_tool.gd")[0]
+	var solo_op: Array = OT.diff(String(solo.text), String(solo.text) + "# solo edit\n").to_array()
+	var solo_msg := {"t": "tx_op", "path": "res://tools/editor_tool.gd", "rev": int(solo.rev), "op": solo_op, "cseq": 1, "cid": "solo", "epoch": String(solo.epoch)}
+	ed2.send(solo_msg, Session.CH_LIVE)
+	check(pump(3000, func(): return host.docs.texts.has("res://tools/editor_tool.gd") and host.docs.texts["res://tools/editor_tool.gd"].text.contains("# solo edit")), "solo edit applied")
 	var ed2_pid := ed2.my_pid
 	ed2.net.stop()
 	ed2._conn = null
 	ed2._start_reconnect("test drop")
 	check(pump(20000, func(): return ed2.state == "connected"), "joiner reconnects automatically")
 	check(ed2.my_pid == ed2_pid, "reconnect keeps the same peer id")
+	check(host.docs.texts.has("res://tools/editor_tool.gd"), "host kept the dropped joiner's document")
+	tx[ed2.my_pid].clear()
+	ed2.send({"t": "tx_open", "path": "res://tools/editor_tool.gd", "epoch": String(solo.epoch), "rev": int(solo.rev)}, Session.CH_LIVE)
+	check(pump(3000, func(): return tx[ed2.my_pid].any(func(m): return m.t == "tx_state" and m.since is Array and m.epoch == solo.epoch)), "reconnect resumes the same document with a replay")
+	ed2.send(solo_msg, Session.CH_LIVE)  # resent after the reconnect, as the client does
+	pump(500)
+	check(host.docs.texts["res://tools/editor_tool.gd"].text.count("# solo edit") == 1, "a resent edit isn't applied twice")
 	write(host_dir, "after_reconnect.txt", "yes")
 	check(pump(6000, func(): return read(ed2_dir, "after_reconnect.txt") == "yes"), "sync works after reconnect")
 

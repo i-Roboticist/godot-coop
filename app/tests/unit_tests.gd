@@ -28,7 +28,9 @@ func _init() -> void:
 	seed(12345)
 	test_ot_basics()
 	test_ot_fuzz()
+	test_ot_diff()
 	test_ot_client_server()
+	test_ot_client_identity()
 	test_crypto()
 	test_invite()
 	test_paths()
@@ -113,6 +115,69 @@ func test_ot_fuzz() -> void:
 	check(ok_t, "ot transform convergence (fuzz)")
 	check(ok_c, "ot compose (fuzz)")
 	check(ok_i, "ot invert (fuzz)")
+
+
+func test_ot_diff() -> void:
+	# Any diff must turn `before` into `after`, whatever the caret hint.
+	var ok := true
+	for i in 600:
+		var a := rand_text(randi() % 80)
+		var b: String = rand_op(a).apply(a)
+		var cursor := randi() % (b.length() + 2) - 1
+		var d := OT.diff(a, b, cursor)
+		if d.base_length != a.length() or d.apply(a) != b:
+			ok = false
+			print("diff failed: ", a.c_escape(), " -> ", b.c_escape(), " cursor ", cursor)
+			break
+	check(ok, "ot diff is exact (fuzz)")
+	# Edits on two far-apart lines become two parts, so a teammate's edit between them stays put.
+	var lines := []
+	for i in 50:
+		lines.append("line %d" % i)
+	var base := "\n".join(lines) + "\n"
+	var ours_l := lines.duplicate()
+	ours_l[5] = "X" + ours_l[5]
+	ours_l[40] = "X" + ours_l[40]
+	var theirs_l := lines.duplicate()
+	theirs_l[20] = "Y" + theirs_l[20]
+	var ours := "\n".join(ours_l) + "\n"
+	var theirs := "\n".join(theirs_l) + "\n"
+	var ins := 0
+	for c in OT.diff(base, ours).ops:
+		if typeof(c) == TYPE_STRING:
+			ins += 1
+	check(ins == 2, "ot diff splits far-apart edits (%d parts)" % ins)
+	var p := OT.transform(OT.diff(base, ours), OT.diff(base, theirs))
+	var merged: String = p[0].apply(theirs)
+	var ml := merged.split("\n")
+	check(ml[5] == "Xline 5" and ml[20] == "Yline 20" and ml[40] == "Xline 40", "ot concurrent edit between two carets stays on its line")
+	# Ambiguous edits end at the caret: Enter above an indented line, a repeated character.
+	check(OT.diff("func f():\n\tpass", "func f():\n\t\n\tpass", 11).to_array() == [9, "\n\t", 6], "ot diff places Enter+indent at the caret")
+	check(OT.diff("aa", "aaa", 1).to_array() == ["a", 2], "ot diff repeated char at caret 1")
+	check(OT.diff("aa", "aaa", 2).to_array() == [1, "a", 1], "ot diff repeated char at caret 2")
+	check(OT.diff("aaa", "aa", 0).to_array() == [-1, 2], "ot diff backspace among repeats")
+	# Three-way merge.
+	check(OT.merge3("a\nb\nc\n", "a\nB\nc\n", "a\nb\nC\n") == "a\nB\nC\n", "ot merge3 combines both sides")
+	check(OT.merge3("a\nb\nc\nd\n", "a\nB\nc\nD\n", "a\nB\nc\nd\n") == "a\nB\nc\nD\n", "ot merge3 keeps a change made on both sides once")
+	check(OT.merge3("x", "x", "y") == "y" and OT.merge3("x", "y", "x") == "y", "ot merge3 one-sided")
+	check(OT.merge3("", "extends Node\n# typed\n", "extends Node\n") == "extends Node\n# typed\n", "ot merge3 keeps a shared insert once")
+	check(OT.merge3("a\n", "a\nX\n", "a\nY\n") == "a\nY\nX\n", "ot merge3 keeps both different inserts at one spot")
+
+
+## Reopening a file starts a new client: its edits must not be mistaken for old ones.
+func test_ot_client_identity() -> void:
+	var a := OTClient.new()
+	var b := OTClient.new()
+	check(a.cid != b.cid and not a.cid.is_empty(), "ot clients get distinct ids")
+	a.reset(0, "e")
+	a.apply_client(OT.diff("x", "xy"), "x")
+	check(a.is_own(7, 7, a.cid, 1), "ot client recognises its own ack")
+	check(not a.is_own(7, 7, "file", 1), "ot client: a file change with a matching cseq isn't an ack")
+	check(not a.is_own(3, 7, a.cid, 1), "ot client: someone else's op isn't an ack")
+	var doc := TextDoc.new("res://t.gd", "x")
+	doc.receive(0, OT.diff("x", "xy"), "7", 1, a.cid)
+	check(doc.is_duplicate("7", 1, a.cid), "text doc dedupes a resend")
+	check(not doc.is_duplicate("7", 1, b.cid), "text doc accepts cseq 1 from a reopened client")
 
 
 ## Three clients edit concurrently with random delivery order; everyone must converge.

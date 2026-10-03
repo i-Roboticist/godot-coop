@@ -98,6 +98,21 @@ func delete_node(node: Node) -> void:
 	ur.commit_action()
 
 
+## Closes a script tab the way a user would (middle-click in the script list). Marks it saved
+## first so Godot doesn't stop to ask about unsaved changes.
+func close_script(path: String) -> void:
+	var ce := code_edit_for(path)
+	if ce != null:
+		ce.tag_saved_version()
+	var se := EditorInterface.get_script_editor()
+	for list in se.find_children("*", "ItemList", true, false):
+		for i in list.item_count:
+			if String(list.get_item_tooltip(i)).contains(path.trim_prefix("res://")) or list.get_item_text(i).trim_suffix("(*)") == path.get_file():
+				list.item_clicked.emit(i, Vector2.ZERO, MOUSE_BUTTON_MIDDLE)
+				await wait(0.3)
+				return
+
+
 func code_edit_for(path: String) -> CodeEdit:
 	var se := EditorInterface.get_script_editor()
 	var scripts := se.get_open_scripts()
@@ -108,3 +123,7 @@ func code_edit_for(path: String) -> CodeEdit:
 			if b is CodeEdit:
 				return b
 	return null
+
+
+func _live(path: String) -> bool:
+	return P.script_sync.trackers.has(path) and P.script_sync.trackers[path].ready

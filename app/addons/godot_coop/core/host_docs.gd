@@ -20,6 +20,10 @@ var scenes := {}             # res path -> SceneDoc
 var texts := {}              # res path -> TextDoc
 var _file_cseq := 0
 
+## A script document whose editors all dropped off (rather than closing it) is kept this long, so
+## they resume it when they reconnect instead of starting over from the file on disk.
+const ORPHAN_KEEP_MS := 10 * 60 * 1000
+
 
 static func _valid_scene_path(p) -> bool:
 	return typeof(p) == TYPE_STRING and Util.is_safe_res_path(p) and p.begins_with("res://") and p.get_extension() in ["tscn", "scn"]
@@ -96,7 +100,21 @@ func peer_left(pid: int) -> void:
 			_reassign_creator(doc)
 	for path in texts.keys():
 		if texts[path].watchers.has(pid):
-			_tx_close(pid, path)
+			_tx_close(pid, path, true)
+
+
+## Drops script documents nobody came back to.
+func prune() -> void:
+	var now := Util.now_ms()
+	for path in texts.keys():
+		var doc = texts[path]
+		if doc.watchers.is_empty() and doc.orphaned_ms > 0 and now - doc.orphaned_ms > ORPHAN_KEEP_MS:
+			texts.erase(path)
+
+
+func is_watching(pid: int, rel: String) -> bool:
+	var doc = texts.get(Util.rel_to_res(rel))
+	return doc != null and doc.watchers.has(pid)
 
 
 # --- scenes ----------------------------------------------------------------------------------
@@ -274,24 +292,33 @@ func _tx_open(pid: int, msg: Dictionary) -> void:
 	var doc = texts.get(path)
 	if doc == null:
 		var abs := project_dir.path_join(Util.res_to_rel(path))
-		var text := FileAccess.get_file_as_string(abs) if FileAccess.file_exists(abs) else ""
-		doc = TextDoc.new(path, text)
+		var exists := FileAccess.file_exists(abs)
+		doc = TextDoc.new(path, FileAccess.get_file_as_string(abs) if exists else "")
+		doc.missing = not exists
 		texts[path] = doc
+	doc.orphaned_ms = 0
 	doc.watchers[pid] = true
-	var reply := {"t": "tx_state", "path": path, "epoch": doc.epoch, "rev": doc.rev, "text": doc.text, "since": null}
+	# "missing": the host doesn't have this file yet (it was just created on the opener's side and
+	# is still on its way), so the opener's text should become the document.
+	var reply := {"t": "tx_state", "path": path, "epoch": doc.epoch, "rev": doc.rev, "text": doc.text, "since": null,
+		"missing": doc.missing and doc.rev == 0}
 	if String(msg.get("epoch", "")) == doc.epoch and msg.has("rev"):
 		reply["since"] = doc.ops_since(int(msg.rev))
 		reply["from_rev"] = int(msg.rev)
 	_send(pid, reply)
 
 
-func _tx_close(pid: int, path: String) -> void:
+func _tx_close(pid: int, path: String, keep := false) -> void:
 	var doc = texts.get(path)
 	if doc == null:
 		return
 	doc.watchers.erase(pid)
+	_to_watchers(doc.watchers, {"t": "tx_cursor", "path": path, "by": pid, "sel": []})
 	if doc.watchers.is_empty():
-		texts.erase(path)
+		if keep:
+			doc.orphaned_ms = Util.now_ms()
+		else:
+			texts.erase(path)
 
 
 func _tx_op(pid: int, msg: Dictionary) -> void:
@@ -305,34 +332,48 @@ func _tx_op(pid: int, msg: Dictionary) -> void:
 		return
 	var uuid := String(uuid_fn.call(pid))
 	var cseq := int(msg.get("cseq", 0))
-	if doc.is_duplicate(uuid, cseq):
+	var cid := String(msg.get("cid", ""))
+	if doc.is_duplicate(uuid, cseq, cid):
 		return
 	var op := OT.from_array(msg.get("op"))
 	if op == null:
 		return
-	var applied = doc.receive(int(msg.get("rev", -1)), op, uuid, cseq)
+	var applied = doc.receive(int(msg.get("rev", -1)), op, uuid, cseq, cid)
 	if applied == null:
 		_send(pid, {"t": "tx_reject", "path": path, "reason": "conflict"})
 		return
-	_to_watchers(doc.watchers, {"t": "tx_op", "path": path, "rev": doc.rev, "op": applied.to_array(), "by": pid, "uuid": uuid, "cseq": cseq})
+	_to_watchers(doc.watchers, {"t": "tx_op", "path": path, "rev": doc.rev, "op": applied.to_array(), "by": pid, "uuid": uuid, "cseq": cseq, "cid": cid})
 	activity_fn.call(pid, "is editing %s" % path.get_file(), {"type": "script", "path": path}, "tx:" + path)
 
 
-## A script file changed on disk (saved in Godot, or edited in an external editor). If it is open
-## live, fold the change into the document as an edit so open editors update in place.
-func on_file_changed(rel: String, by: int) -> void:
+## A new version of a script file arrived or was saved. `live` means it came from an editor that
+## has the document open: that editor's edits already reach the document as live operations (some
+## may still be on their way), so the file adds nothing and must not be merged in again. Anything
+## else (an external editor, a save from someone without the file open) is merged three-way
+## against the last version seen on disk, so live edits made since aren't lost.
+## `text` is the new contents (read from disk when null).
+func on_file_changed(rel: String, by: int, live := false, text = null) -> void:
 	var path := Util.rel_to_res(rel)
 	var doc = texts.get(path)
 	if doc == null:
 		return
-	var abs := project_dir.path_join(rel)
-	if not FileAccess.file_exists(abs):
+	var disk: String
+	if text is String:
+		disk = text
+	else:
+		var abs := project_dir.path_join(rel)
+		if not FileAccess.file_exists(abs):
+			return
+		disk = FileAccess.get_file_as_string(abs)
+	disk = disk.replace("\r\n", "\n")
+	var base: String = doc.disk_text
+	doc.disk_text = disk
+	if live or disk == base or disk == doc.text:
 		return
-	var disk := FileAccess.get_file_as_string(abs).replace("\r\n", "\n")
-	if disk == doc.text:
+	var merged := OT.merge3(base, doc.text, disk)
+	if merged == doc.text:
 		return
-	var op := OT.diff(doc.text, disk)
 	_file_cseq += 1
-	var applied = doc.receive(doc.rev, op, "file", _file_cseq)
+	var applied = doc.receive(doc.rev, OT.diff(doc.text, merged), "file", _file_cseq, "file")
 	if applied != null:
-		_to_watchers(doc.watchers, {"t": "tx_op", "path": path, "rev": doc.rev, "op": applied.to_array(), "by": by, "uuid": "file", "cseq": _file_cseq})
+		_to_watchers(doc.watchers, {"t": "tx_op", "path": path, "rev": doc.rev, "op": applied.to_array(), "by": by, "uuid": "file", "cseq": _file_cseq, "cid": "file"})

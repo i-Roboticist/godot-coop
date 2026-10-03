@@ -65,6 +65,13 @@ func session_started() -> void:
 	_scan_editors(true)
 
 
+## Connection lost: hold local edits in the editor (they're picked up as one edit when we resume)
+## instead of sending them into a session that may have forgotten us.
+func session_lost() -> void:
+	for path in trackers:
+		trackers[path].ready = false
+
+
 func session_resumed() -> void:
 	for path in trackers:
 		var tr: STracker = trackers[path]
@@ -75,6 +82,11 @@ func session_resumed() -> void:
 			msg["rev"] = tr.client.rev
 		tr.ready = false
 		_session().send(msg, Net.CH_LIVE)
+
+
+## True while `path` is a live document here, so a save of it adds nothing the host hasn't got.
+func is_live(path: String) -> bool:
+	return trackers.has(path) and trackers[path].ready
 
 
 func is_open(path: String) -> bool:
@@ -147,7 +159,7 @@ func _start(path: String, code: CodeEdit) -> void:
 	tr.client = OTClient.new()
 	var me := tr
 	tr.client.send_op.connect(func(rev: int, op, cseq: int):
-		_session().send({"t": "tx_op", "path": me.path, "rev": rev, "op": op.to_array(), "cseq": cseq, "epoch": me.client.epoch}, Net.CH_LIVE))
+		_session().send({"t": "tx_op", "path": me.path, "rev": rev, "op": op.to_array(), "cseq": cseq, "cid": me.client.cid, "epoch": me.client.epoch}, Net.CH_LIVE))
 	tr.cb_text = _on_text_changed.bind(tr)
 	tr.cb_caret = _on_caret_changed.bind(tr)
 	tr.cb_input = _on_code_input.bind(tr)
@@ -217,7 +229,8 @@ func _flush_local(tr: STracker) -> void:
 			plugin.toast("You can't edit %s in this session (read-only)." % tr.path.get_file(), 1)
 		return
 	var before := tr.known
-	var op := OT.diff(before, now_text)
+	var cursor := _lc_to_offset(now_text, tr.code.get_caret_line(), tr.code.get_caret_column())
+	var op := OT.diff(before, now_text, cursor)
 	tr.known = now_text
 	tr.client.apply_client(op, before)
 	_transform_remote(tr, op)
@@ -279,7 +292,7 @@ func on_message(m: Dictionary) -> void:
 			if not tr.ready:
 				return
 			_flush_local(tr)
-			if int(m.get("by", 0)) == me and int(m.get("cseq", -1)) == tr.client.outstanding_cseq and tr.client.has_pending():
+			if tr.client.is_own(int(m.get("by", 0)), me, String(m.get("cid", "")), int(m.get("cseq", -1))):
 				tr.client.server_ack()
 				return
 			var op = OT.from_array(m.get("op"))
@@ -302,7 +315,11 @@ func on_message(m: Dictionary) -> void:
 		"tx_cursor":
 			var by := int(m.get("by", 0))
 			if by != me:
-				tr.remote[by] = {"sel": m.get("sel", []), "moved": Util.now_ms()}
+				var sel: Array = m.get("sel", []) if m.get("sel") is Array else []
+				if sel.is_empty():
+					tr.remote.erase(by)          # they closed the file or left
+				else:
+					tr.remote[by] = {"sel": sel, "moved": Util.now_ms()}
 				if is_instance_valid(tr.overlay):
 					tr.overlay.queue_redraw()
 
@@ -317,8 +334,8 @@ func _on_state(tr: STracker, m: Dictionary) -> void:
 		tr.ready = true
 		_flush_local(tr)
 		for h in since:
-			var author := String(h[1])
-			if author == str(me) and int(h[2]) == tr.client.outstanding_cseq and tr.client.has_pending():
+			var own: bool = h.size() >= 4 and String(h[1]) == str(me) and String(h[3]) == tr.client.cid
+			if own and tr.client.is_own(me, me, tr.client.cid, int(h[2])):
 				tr.client.server_ack()
 			else:
 				var lop = tr.client.apply_server(OT.from_array(h[0]))
@@ -326,6 +343,7 @@ func _on_state(tr: STracker, m: Dictionary) -> void:
 					_resync(tr)
 					return
 				_apply_to_editor(tr, lop, false)
+				_transform_remote(tr, lop)
 		tr.client.resend()
 		return
 	tr.cursor_due = Util.now_ms() + 300
@@ -335,18 +353,31 @@ func _on_state(tr: STracker, m: Dictionary) -> void:
 	var disk := FileAccess.get_file_as_string(disk_path).replace("\r\n", "\n") if FileAccess.file_exists(disk_path) else ""
 	tr.ready = true
 	var unsaved := tr.code.get_version() != tr.code.get_saved_version()
+	tr.known = text
 	if local == text:
-		tr.known = text
-	elif unsaved and local != disk and text == disk:
-		# We had unsaved edits before joining the live document: share them.
-		tr.known = text
-		var op := OT.diff(text, local)
-		tr.known = local
-		tr.client.apply_client(op, text)
+		pass
+	elif bool(m.get("missing", false)) and text.is_empty():
+		# The host doesn't have this file yet (we just created it): our text is the document.
+		_share(tr, text, local)
+	elif unsaved and local != disk:
+		if text == disk:
+			# We had unsaved edits before joining the live document: share them.
+			_share(tr, text, local)
+		else:
+			# Both our unsaved edits and the live document moved on from the file: merge them.
+			var merged := OT.merge3(disk, local, text)
+			_set_text_keep_view(tr, merged)
+			_share(tr, text, merged)
 	else:
 		_set_text_keep_view(tr, text)
-		tr.known = text
 	tr.seen_version = -1
+
+
+## The editor shows `local` while the document is `doc_text`: send the difference as our edit.
+func _share(tr: STracker, doc_text: String, local: String) -> void:
+	tr.known = local
+	if local != doc_text:
+		tr.client.apply_client(OT.diff(doc_text, local), doc_text)
 
 
 func _resync(tr: STracker) -> void:
@@ -360,6 +391,8 @@ func _set_text_keep_view(tr: STracker, text: String) -> void:
 	var col := tr.code.get_caret_column()
 	var scroll := tr.code.scroll_vertical
 	tr.code.text = text
+	# Godot's own undo must not be able to bring the replaced text back (it would be sent to everyone).
+	tr.code.clear_undo_history()
 	tr.code.set_caret_line(mini(line, tr.code.get_line_count() - 1), false)
 	tr.code.set_caret_column(col, false)
 	tr.code.scroll_vertical = scroll
@@ -386,6 +419,15 @@ func _apply_to_editor(tr: STracker, op, _local: bool) -> void:
 			else:
 				edits.append([idx, idx - c, ""])
 			idx -= c
+	# Lines added or removed above the view would make the text under the reader jump: count them
+	# and scroll by the same amount.
+	var first_line := tr.code.get_first_visible_line()
+	var first_off := _lc_to_offset(old, first_line, 0)
+	var shift := 0
+	for e in edits:
+		if e[0] < first_off:
+			var cut_end := mini(e[1], first_off)
+			shift += String(e[2]).count("\n") - (old.count("\n", e[0], cut_end) if cut_end > e[0] else 0)
 	tr.code.begin_complex_operation()
 	for i in range(edits.size() - 1, -1, -1):
 		var e: Array = edits[i]
@@ -396,6 +438,11 @@ func _apply_to_editor(tr: STracker, op, _local: bool) -> void:
 		if not String(e[2]).is_empty():
 			tr.code.insert_text(e[2], a.x, a.y, false, false)
 	tr.code.end_complex_operation()
+	# Teammates' edits (and our per-user undo) must not be revertible through Godot's own undo,
+	# which Edit > Undo and the context menu call directly.
+	tr.code.clear_undo_history()
+	if shift != 0:
+		tr.code.set_line_as_first_visible(clampi(first_line + shift, 0, tr.code.get_line_count() - 1))
 	tr.known = new_text
 	if tr.code.text != new_text:
 		_set_text_keep_view(tr, new_text)

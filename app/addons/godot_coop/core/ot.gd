@@ -342,12 +342,101 @@ static func from_array(arr) -> RefCounted:
 	return op
 
 
-## Smallest single-range edit turning `before` into `after`.
-static func diff(before: String, after: String) -> RefCounted:
+const MAX_DIFF_STEPS := 400
+const MAX_DIFF_LINES := 20000
+
+
+## Edit turning `before` into `after`. Changes in separate places (several carets, Replace All)
+## become separate parts of one operation, so a teammate's edit between them stays where it was.
+## `cursor` is the caret offset in `after` (or -1). When the same edit could sit in several places
+## (typing a character equal to its neighbour, Enter above an indented line), it ends at the caret.
+static func diff(before: String, after: String, cursor := -1) -> RefCounted:
+	return _op_from_hunks(before, after, _hunks(before, after, cursor))
+
+
+## Three-way merge: the changes from `base` to `ours` and from `base` to `theirs`, combined.
+## Changes in different places are both kept. Where they overlap: identical changes are kept once,
+## an insert that contains the other side's insert wins (e.g. "extends Node" vs "extends Node" plus
+## a line typed since), and anything else keeps both, theirs first.
+static func merge3(base: String, ours: String, theirs: String) -> String:
+	if ours == theirs or theirs == base:
+		return ours
+	if ours == base:
+		return theirs
+	var all := []   # [b0, b1, side (0 ours / 1 theirs), text]
+	for h in _hunks(base, ours):
+		all.append([h[0], h[1], 0, ours.substr(h[2], h[3] - h[2])])
+	for h in _hunks(base, theirs):
+		all.append([h[0], h[1], 1, theirs.substr(h[2], h[3] - h[2])])
+	all.sort_custom(func(x, y): return x[0] < y[0] or (x[0] == y[0] and x[1] < y[1]))
+	var out := PackedStringArray()
+	var idx := 0
+	var i := 0
+	while i < all.size():
+		# Gather a cluster of overlapping changes (inserts at the same point count as overlapping).
+		var c0: int = all[i][0]
+		var c1: int = all[i][1]
+		var members := [all[i]]
+		i += 1
+		while i < all.size():
+			var h: Array = all[i]
+			var overlaps: bool = h[0] < c1 or (h[0] == c1 and (h[0] == h[1] or c0 == c1))
+			if not overlaps:
+				break
+			c1 = maxi(c1, h[1])
+			members.append(h)
+			i += 1
+		out.append(base.substr(idx, c0 - idx))
+		idx = c1
+		var mid := base.substr(c0, c1 - c0)
+		var versions := ["", ""]
+		var sides := {}
+		for side in 2:
+			var parts := PackedStringArray()
+			var at := c0
+			for h in members:
+				if h[2] == side:
+					sides[side] = true
+					parts.append(base.substr(at, h[0] - at))
+					parts.append(h[3])
+					at = h[1]
+			parts.append(base.substr(at, c1 - at))
+			versions[side] = "".join(parts)
+		var o: String = versions[0]
+		var t: String = versions[1]
+		if sides.size() < 2 or o == t:
+			out.append(o if sides.has(0) else t)
+		elif mid.is_empty():
+			if o.begins_with(t) or o.ends_with(t):
+				out.append(o)
+			elif t.begins_with(o) or t.ends_with(o):
+				out.append(t)
+			else:
+				out.append(t + o)
+		else:
+			var p := transform(diff(mid, o), diff(mid, t))
+			var r = p[0].apply(t) if not p.is_empty() else null
+			out.append(r if r != null else t)
+	out.append(base.substr(idx))
+	return "".join(out)
+
+
+static func _op_from_hunks(before: String, after: String, hunks: Array) -> RefCounted:
 	var op := create()
+	var idx := 0
+	for h in hunks:
+		op.retain(h[0] - idx)
+		op.insert(after.substr(h[2], h[3] - h[2]))
+		op.delete(h[1] - h[0])
+		idx = h[1]
+	op.retain(before.length() - idx)
+	return op
+
+
+## Changed regions as [before_start, before_end, after_start, after_end], in order.
+static func _hunks(before: String, after: String, cursor := -1) -> Array:
 	if before == after:
-		op.retain(before.length())
-		return op
+		return []
 	var lb := before.length()
 	var la := after.length()
 	var pre := 0
@@ -355,14 +444,165 @@ static func diff(before: String, after: String) -> RefCounted:
 	while pre < maxpre and before.unicode_at(pre) == after.unicode_at(pre):
 		pre += 1
 	var suf := 0
-	var maxsuf := mini(lb, la) - pre
+	var maxsuf := maxpre - pre
 	while suf < maxsuf and before.unicode_at(lb - 1 - suf) == after.unicode_at(la - 1 - suf):
 		suf += 1
-	op.retain(pre)
-	op.insert(after.substr(pre, la - pre - suf))
-	op.delete(lb - pre - suf)
-	op.retain(suf)
-	return op
+	var hunks := [[pre, lb - suf, pre, la - suf]]
+	var mid_b := before.substr(pre, lb - suf - pre)
+	var mid_a := after.substr(pre, la - suf - pre)
+	if mid_b.contains("\n") and mid_a.contains("\n"):
+		var split := _line_hunks(mid_b, mid_a)
+		if split.size() > 1:
+			hunks = []
+			for h in split:
+				var t := _trim_hunk(before, after, [h[0] + pre, h[1] + pre, h[2] + pre, h[3] + pre])
+				if not t.is_empty():
+					hunks.append(t)
+	if hunks.size() == 1 and cursor >= 0:
+		hunks[0] = _slide_to_cursor(before, after, hunks[0], cursor)
+	return hunks
+
+
+static func _trim_hunk(before: String, after: String, h: Array) -> Array:
+	var b0: int = h[0]
+	var b1: int = h[1]
+	var a0: int = h[2]
+	var a1: int = h[3]
+	while b0 < b1 and a0 < a1 and before.unicode_at(b0) == after.unicode_at(a0):
+		b0 += 1
+		a0 += 1
+	while b1 > b0 and a1 > a0 and before.unicode_at(b1 - 1) == after.unicode_at(a1 - 1):
+		b1 -= 1
+		a1 -= 1
+	if b0 == b1 and a0 == a1:
+		return []
+	return [b0, b1, a0, a1]
+
+
+## A pure insert or delete can often move left without changing the result ("aa" + "a" at either
+## end). Move it until it ends at the caret, which is where the user actually typed.
+static func _slide_to_cursor(before: String, after: String, h: Array, cursor: int) -> Array:
+	var b0: int = h[0]
+	var b1: int = h[1]
+	var a0: int = h[2]
+	var a1: int = h[3]
+	if b0 == b1:
+		while a1 > cursor and b0 > 0 and before.unicode_at(b0 - 1) == after.unicode_at(a1 - 1):
+			b0 -= 1
+			b1 -= 1
+			a0 -= 1
+			a1 -= 1
+	elif a0 == a1:
+		while a0 > cursor and b0 > 0 and before.unicode_at(b0 - 1) == before.unicode_at(b1 - 1):
+			b0 -= 1
+			b1 -= 1
+			a0 -= 1
+			a1 -= 1
+	return [b0, b1, a0, a1]
+
+
+static func _lines(s: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	var start := 0
+	while start < s.length():
+		var nl := s.find("\n", start)
+		if nl == -1:
+			out.append(s.substr(start))
+			break
+		out.append(s.substr(start, nl - start + 1))
+		start = nl + 1
+	return out
+
+
+## Line-level diff of two texts as char-offset hunks, or [] when they're too different to bother.
+static func _line_hunks(b_text: String, a_text: String) -> Array:
+	var lb := _lines(b_text)
+	var la := _lines(a_text)
+	if lb.size() + la.size() > MAX_DIFF_LINES:
+		return []
+	var script := _myers(lb, la)
+	if script.is_empty():
+		return []
+	var hunks := []
+	var ib := 0
+	var ia := 0
+	var ob := 0
+	var oa := 0
+	var cur := []
+	for s in script:
+		if s == 0:
+			if not cur.is_empty():
+				hunks.append([cur[0], ob, cur[1], oa])
+				cur = []
+			ob += lb[ib].length()
+			oa += la[ia].length()
+			ib += 1
+			ia += 1
+		else:
+			if cur.is_empty():
+				cur = [ob, oa]
+			if s == 1:
+				ob += lb[ib].length()
+				ib += 1
+			else:
+				oa += la[ia].length()
+				ia += 1
+	if not cur.is_empty():
+		hunks.append([cur[0], ob, cur[1], oa])
+	return hunks
+
+
+## Myers' shortest edit script: 0 = keep a line, 1 = delete a[i], 2 = insert b[j]. [] if it would
+## take more than MAX_DIFF_STEPS edits.
+static func _myers(a: PackedStringArray, b: PackedStringArray) -> Array:
+	var n := a.size()
+	var m := b.size()
+	var maxd := mini(n + m, MAX_DIFF_STEPS)
+	var off := maxd + 1
+	var v := PackedInt32Array()
+	v.resize(2 * maxd + 3)
+	v.fill(0)
+	var trace: Array = []
+	var found := false
+	for d in range(maxd + 1):
+		trace.append(v.duplicate())
+		for k in range(-d, d + 1, 2):
+			var x: int
+			if k == -d or (k != d and v[off + k - 1] < v[off + k + 1]):
+				x = v[off + k + 1]
+			else:
+				x = v[off + k - 1] + 1
+			var y := x - k
+			while x < n and y < m and a[x] == b[y]:
+				x += 1
+				y += 1
+			v[off + k] = x
+			if x >= n and y >= m:
+				found = true
+				break
+		if found:
+			break
+	if not found:
+		return []
+	var script := []
+	var x := n
+	var y := m
+	for d in range(trace.size() - 1, -1, -1):
+		var vv: PackedInt32Array = trace[d]
+		var k := x - y
+		var prev_k := k + 1 if k == -d or (k != d and vv[off + k - 1] < vv[off + k + 1]) else k - 1
+		var prev_x := vv[off + prev_k]
+		var prev_y := prev_x - prev_k
+		while x > prev_x and y > prev_y:
+			script.append(0)
+			x -= 1
+			y -= 1
+		if d > 0:
+			script.append(2 if x == prev_x else 1)
+		x = prev_x
+		y = prev_y
+	script.reverse()
+	return script
 
 
 ## Moves a cursor offset through an operation (used for remote carets).

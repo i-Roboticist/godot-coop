@@ -181,6 +181,7 @@ func _new_session() -> void:
 func _wire_files() -> void:
 	var f = session.files
 	f.is_open_fn = _is_open_in_editor
+	f.live_fn = func(rel: String): return script_sync.is_live("res://" + rel)
 	f.trust_risky = trust_host
 	f.file_applied.connect(_on_file_applied)
 	f.quarantine_changed.connect(_on_quarantine_changed)
@@ -281,6 +282,8 @@ func _on_state_changed(state: String, detail: String) -> void:
 	match state:
 		"reconnecting":
 			if live:
+				script_sync.session_lost()
+				scene_sync.session_lost()
 				toast("Connection lost. Reconnecting…", 1)
 		"failed":
 			toast("Co-op: " + detail, 2)

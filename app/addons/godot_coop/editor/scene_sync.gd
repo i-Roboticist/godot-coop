@@ -98,6 +98,11 @@ func session_started() -> void:
 	_refresh_open_scenes(true)
 
 
+## Connection lost: nothing to do until it comes back (see session_resumed).
+func session_lost() -> void:
+	pass
+
+
 ## The connection came back: re-open every scene (unacked edits are re-applied after the reconcile).
 func session_resumed() -> void:
 	for path in trackers:

@@ -15,6 +15,9 @@ const Util := preload("res://addons/godot_coop/core/util.gd")
 const Security := preload("res://addons/godot_coop/core/security.gd")
 
 signal file_applied(rel: String, by: int, deleted: bool)
+## Host: a new version of `rel` was accepted (placed, or held back because the file is open). `src`
+## holds its contents; `live` means the sender has it open as a live document.
+signal file_received(rel: String, by: int, src: String, live: bool)
 signal local_change(rel: String, deleted: bool)
 signal progress(done_bytes: int, total_bytes: int, current: String)
 signal sync_finished(summary: Dictionary)
@@ -35,6 +38,7 @@ var my_id := 0
 var send_fn: Callable            # func(dest: int, msg: Dictionary) -> void
 var can_write_fn: Callable       # host only: func(pid: int, rel: String) -> bool
 var is_open_fn: Callable         # func(rel: String) -> bool   (open in the local editor => defer write)
+var live_fn: Callable            # func(rel: String) -> bool   (a live document here: its edits go live)
 var peers_fn: Callable           # host only: func() -> Array[int] of synced remote peers
 var manage_project_godot := true
 var trust_risky := false
@@ -235,7 +239,7 @@ func _on_local_change(rel: String, h: String) -> void:
 		for pid in _remote_peers():
 			queue_put(pid, rel, my_id, b)
 	else:
-		queue_put(1, rel, my_id, b)
+		queue_put(1, rel, my_id, b, live_fn.is_valid() and live_fn.call(rel))
 	local_change.emit(rel, false)
 
 
@@ -402,14 +406,14 @@ func _outq(dest: int) -> Dictionary:
 	return _out[dest]
 
 
-func queue_put(dest: int, rel: String, by: int, base_hash: String) -> void:
+func queue_put(dest: int, rel: String, by: int, base_hash: String, live := false) -> void:
 	var q := _outq(dest)
 	# Drop an older pending put of the same file - only the latest content matters.
 	for i in range(q.queue.size() - 1, -1, -1):
 		var j: Dictionary = q.queue[i]
 		if j.kind == "put" and j.rel == rel:
 			q.queue.remove_at(i)
-	q.queue.append({"kind": "put", "rel": rel, "by": by, "base": base_hash})
+	q.queue.append({"kind": "put", "rel": rel, "by": by, "base": base_hash, "live": live})
 
 
 func queue_del(dest: int, rel: String, by: int, base_hash: String) -> void:
@@ -507,14 +511,14 @@ func _start_put(dest: int, q: Dictionary, job: Dictionary) -> void:
 	_xid += 1
 	if size <= SMALL:
 		var data := FileAccess.get_file_as_bytes(src)
-		send_fn.call(dest, {"t": "file_put", "xid": _xid, "rel": job.rel, "hash": h, "data": data, "by": job.by, "base": job.base})
+		send_fn.call(dest, {"t": "file_put", "xid": _xid, "rel": job.rel, "hash": h, "data": data, "by": job.by, "base": job.base, "live": bool(job.get("live", false))})
 		q.inflight += maxi(size, 1)
 		stats.sent += size
 		return
 	var f := FileAccess.open(src, FileAccess.READ)
 	if f == null:
 		return
-	send_fn.call(dest, {"t": "file_begin", "xid": _xid, "rel": job.rel, "hash": h, "size": size, "by": job.by, "base": job.base})
+	send_fn.call(dest, {"t": "file_begin", "xid": _xid, "rel": job.rel, "hash": h, "size": size, "by": job.by, "base": job.base, "live": bool(job.get("live", false))})
 	q.active = {"xid": _xid, "file": f, "size": size, "off": 0}
 
 
@@ -598,7 +602,7 @@ func _recv_put(from: int, msg: Dictionary) -> void:
 		return
 	f.store_buffer(data)
 	f.close()
-	_commit(from, rel, tmp, String(msg.hash), _author(from, msg), data.size())
+	_commit(from, rel, tmp, String(msg.hash), _author(from, msg), data.size(), bool(msg.get("live", false)))
 
 
 func _recv_begin(from: int, msg: Dictionary) -> void:
@@ -611,7 +615,7 @@ func _recv_begin(from: int, msg: Dictionary) -> void:
 	var f := FileAccess.open(tmp, FileAccess.WRITE)
 	_in["%d:%d" % [from, int(msg.xid)]] = {
 		"rel": rel, "hash": String(msg.get("hash", "")), "size": size, "file": f, "tmp": tmp,
-		"got": 0, "by": _author(from, msg), "skip": f == null,
+		"got": 0, "by": _author(from, msg), "skip": f == null, "live": bool(msg.get("live", false)),
 	}
 
 
@@ -654,7 +658,7 @@ func _recv_end(from: int, msg: Dictionary) -> void:
 		if not is_host:
 			send_fn.call(1, {"t": "file_get", "rels": [t.rel]})
 		return
-	_commit(from, t.rel, t.tmp, t.hash, t.by, t.size)
+	_commit(from, t.rel, t.tmp, t.hash, t.by, t.size, bool(t.get("live", false)))
 
 
 func _recv_del(from: int, msg: Dictionary) -> void:
@@ -674,7 +678,7 @@ func _recv_del(from: int, msg: Dictionary) -> void:
 
 
 ## A verified file has arrived in `tmp`; decide whether it goes in place, waits for review, or is deferred.
-func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int) -> void:
+func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int, live := false) -> void:
 	if _expect_files.has(rel):
 		_expect_files.erase(rel)
 		_expect_done += size
@@ -690,13 +694,13 @@ func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int)
 			Util.move_file(tmp, qtmp)
 			if quarantine.has(rel):
 				DirAccess.remove_absolute(quarantine[rel].tmp)
-			quarantine[rel] = {"tmp": qtmp, "hash": h, "by": by, "from": from, "reason": reason}
+			quarantine[rel] = {"tmp": qtmp, "hash": h, "by": by, "from": from, "reason": reason, "live": live}
 			quarantine_changed.emit()
 			return
-	_accept(from, rel, tmp, h, by)
+	_accept(from, rel, tmp, h, by, live)
 
 
-func _accept(from: int, rel: String, tmp: String, h: String, by: int) -> void:
+func _accept(from: int, rel: String, tmp: String, h: String, by: int, live := false) -> void:
 	var prev_base := String(base.get(rel, ""))
 	_set_base(rel, h)
 	if is_open_fn.is_valid() and is_open_fn.call(rel):
@@ -706,8 +710,12 @@ func _accept(from: int, rel: String, tmp: String, h: String, by: int) -> void:
 			DirAccess.remove_absolute(deferred[rel].tmp)
 		deferred[rel] = {"tmp": qtmp, "hash": h, "disk_hash": _disk_hash(rel), "by": by}
 		deferred_changed.emit()
+		if is_host:
+			file_received.emit(rel, by, qtmp, live)
 	else:
 		_place(rel, tmp)
+		if is_host:
+			file_received.emit(rel, by, abs_path(rel), live)
 		file_applied.emit(rel, by, false)
 	if is_host:
 		for pid in _remote_peers():
@@ -781,7 +789,7 @@ func accept_quarantined(rel: String) -> void:
 	quarantine.erase(rel)
 	var tmp := _coop("tmp").path_join(Util.random_hex(6) + ".part")
 	Util.move_file(q.tmp, tmp)
-	_accept(int(q.from), rel, tmp, String(q.hash), int(q.by))
+	_accept(int(q.from), rel, tmp, String(q.hash), int(q.by), bool(q.get("live", false)))
 	quarantine_changed.emit()
 
 

@@ -68,6 +68,9 @@ jobs:
       - name: Two-editor tests
         run: python tests/editor/run_editor_tests.py
 
+      - name: Two-editor edge cases
+        run: python tests/editor/run_editor_tests.py --suite edge
+
       - name: Build the app
         run: python build.py
 
