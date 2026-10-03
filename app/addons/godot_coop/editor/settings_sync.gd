@@ -79,6 +79,9 @@ static func _is_risky(keys: Array) -> bool:
 func on_message(m: Dictionary) -> void:
 	match String(m.get("t", "")):
 		"proj_set", "proj_full":
+			# Send our own pending change first, so applying this doesn't swallow it.
+			if _due:
+				process()
 			var changes: Dictionary = m.get("set", {}) if m.get("set") is Dictionary else {}
 			var removed: Array = m.get("erase", []) if m.get("erase") is Array else []
 			if m.t == "proj_full":
@@ -93,7 +96,8 @@ func on_message(m: Dictionary) -> void:
 			if changes.is_empty() and removed.is_empty():
 				return
 			var keys := changes.keys() + removed
-			if _is_risky(keys) and not plugin.trust_host:
+			var own: bool = m.t == "proj_set" and int(m.get("by", 0)) == _session().my_pid
+			if _is_risky(keys) and not plugin.trust_host and not own:
 				held.append({"by": int(m.get("by", 1)), "set": changes, "erase": removed})
 				plugin.notify("%s changed autoloads or editor plugins. Review it in the Co-op dock." % _session().peer_name(int(m.get("by", 1))), Color.ORANGE, Callable())
 				plugin.refresh_ui()

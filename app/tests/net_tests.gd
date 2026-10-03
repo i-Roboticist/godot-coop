@@ -179,6 +179,59 @@ func _init() -> void:
 	host.set_peer_role(ed2.my_pid, "editor", [])
 	pump(300)
 
+	# --- Files: edge cases ---------------------------------------------------------------------
+	# Two joiners save the same new file at the same moment: everyone ends with one version (the
+	# host's last), and the other is kept as a conflict copy, not silently lost.
+	write(dl_dir, "same.txt", "from ed1")
+	write(ed2_dir, "same.txt", "from ed2")
+	ed1.files.check_path("same.txt")
+	ed2.files.check_path("same.txt")
+	check(pump(8000, func(): return read(host_dir, "same.txt") != "<missing>" and read(dl_dir, "same.txt") == read(host_dir, "same.txt") and read(ed2_dir, "same.txt") == read(host_dir, "same.txt")), "simultaneous saves converge (%s / %s / %s)" % [read(host_dir, "same.txt"), read(dl_dir, "same.txt"), read(ed2_dir, "same.txt")])
+	check(not (host.files.conflict_backups.is_empty() and ed1.files.conflict_backups.is_empty() and ed2.files.conflict_backups.is_empty()), "the losing version is kept as a conflict copy")
+	check(pump(3000, func(): return ed1.files.pending_up.is_empty() and ed2.files.pending_up.is_empty()), "both uploads confirmed (%s / %s)" % [ed1.files.pending_up, ed2.files.pending_up])
+
+	# A file that can't be written (here a folder is in the way) must not turn into a delete.
+	DirAccess.make_dir_recursive_absolute(ed2_dir.path_join("blocked.txt"))
+	write(host_dir, "blocked.txt", "host copy")
+	pump(3000)
+	check(read(host_dir, "blocked.txt") == "host copy", "a failed write on a joiner doesn't delete the file for everyone")
+
+	# A file open (deferred) on a joiner: its base stays at what's on its disk until written, so a
+	# quit-and-rejoin can't mistake the old copy for an edit and upload it.
+	write(host_dir, "deferred.txt", "v1")
+	check(pump(5000, func(): return read(ed2_dir, "deferred.txt") == "v1"), "deferred test file arrives")
+	var v1_hash: String = FileAccess.get_sha256(ed2_dir.path_join("deferred.txt"))
+	ed2.files.is_open_fn = func(rel): return rel == "deferred.txt"
+	write(host_dir, "deferred.txt", "v2")
+	check(pump(5000, func(): return ed2.files.deferred.has("deferred.txt")), "write deferred while the file is open")
+	check(String(ed2.files.base.get("deferred.txt", "")) == v1_hash and read(ed2_dir, "deferred.txt") == "v1", "joiner's base not moved before the file is written")
+	ed2.files.is_open_fn = Callable()
+	ed2.files.flush_deferred("deferred.txt")
+	check(read(ed2_dir, "deferred.txt") == "v2" and String(ed2.files.base.get("deferred.txt", "")) == FileAccess.get_sha256(ed2_dir.path_join("deferred.txt")), "deferred file written on close")
+
+	# A case-only rename on a joiner must not delete the file anywhere.
+	write(host_dir, "Case.txt", "case test")
+	check(pump(5000, func(): return read(ed2_dir, "Case.txt") == "case test"), "case test file arrives")
+	DirAccess.rename_absolute(ed2_dir.path_join("Case.txt"), ed2_dir.path_join("case.txt"))
+	pump(4000)
+	check(read(host_dir, "case.txt") == "case test" and read(ed2_dir, "case.txt") == "case test", "case-only rename keeps the file (%s)" % str(DirAccess.get_files_at(host_dir)))
+
+	# project.godot from a joiner is refused (settings sync separately, with review for autoloads).
+	var pg_before := read(host_dir, "project.godot")
+	write(ed2_dir, "project.godot", "config_version=5\n[autoload]\nEvil=\"*res://evil.gd\"\n")
+	ed2.files.queue_put(1, "project.godot", ed2.my_pid, "")
+	pump(2000)
+	check(read(host_dir, "project.godot") == pg_before, "a joiner can't replace project.godot")
+	DirAccess.remove_absolute(ed2_dir.path_join("project.godot"))
+
+	# Settings changes come back to the sender too, so everyone applies them in the same order.
+	var echoes := []
+	ed1.message.connect(func(m):
+		if m.get("t") == "proj_set":
+			echoes.append(m))
+	ed1.send({"t": "proj_set", "set": {"application/config/description": "echo"}, "erase": []})
+	check(pump(2000, func(): return not echoes.is_empty() and int(echoes[0].by) == ed1.my_pid), "settings change echoed to its sender")
+
 	# --- Live text editing (OT) ---------------------------------------------------------------
 	var tx := {1: [], ed1.my_pid: [], ed2.my_pid: []}
 	var states := {}
@@ -299,6 +352,10 @@ func _init() -> void:
 	ed2.send(solo_msg, Session.CH_LIVE)
 	check(pump(3000, func(): return host.docs.texts.has("res://tools/editor_tool.gd") and host.docs.texts["res://tools/editor_tool.gd"].text.contains("# solo edit")), "solo edit applied")
 	var ed2_pid := ed2.my_pid
+	# A change saved just before the connection drops (still queued, never sent) must reach the
+	# host after the reconnect, not be overwritten by the host's copy.
+	write(ed2_dir, "offline.txt", "made just before the drop")
+	ed2.files.check_path("offline.txt")
 	ed2.net.stop()
 	ed2._conn = null
 	ed2._start_reconnect("test drop")
@@ -313,6 +370,8 @@ func _init() -> void:
 	check(host.docs.texts["res://tools/editor_tool.gd"].text.count("# solo edit") == 1, "a resent edit isn't applied twice")
 	write(host_dir, "after_reconnect.txt", "yes")
 	check(pump(6000, func(): return read(ed2_dir, "after_reconnect.txt") == "yes"), "sync works after reconnect")
+	check(pump(6000, func(): return read(host_dir, "offline.txt") == "made just before the drop"), "an upload cut off by the drop arrives after the reconnect")
+	check(read(ed2_dir, "offline.txt") == "made just before the drop", "and the joiner's copy wasn't replaced")
 
 	# --- A different Godot version is turned away (with the version it needs) ---------------------
 	var odd := Session.new()

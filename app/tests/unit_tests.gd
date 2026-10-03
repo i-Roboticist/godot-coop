@@ -307,6 +307,11 @@ func test_paths() -> void:
 	check(Util.is_ignored("build/out.exe", PackedStringArray(["build/"])), "coopignore dir")
 	check(Util.is_ignored("a/b.psd", PackedStringArray(["*.psd"])), "coopignore glob")
 	check(Util.is_safe_res_path("res://a/b.png") and not Util.is_safe_res_path("res://../x") and not Util.is_safe_res_path("user://x"), "res paths")
+	# Case doesn't matter on Windows/macOS: these must be ignored however they're spelled.
+	for p in [".Coop/prefs.json", ".GIT/config", ".Godot/x", "Addons/Godot_Coop/plugin.gd", "addons/x/.git/hooks/pre-commit", "art/._icon.png", "THUMBS.DB"]:
+		check(Util.is_ignored(p), "ignore " + p)
+	for bad in ["NUL.tar.gz", "COM5.txt", "lpt9", "a<b.txt", "q\"x.txt", "a|b.png", "x?.png", "s*.gd"]:
+		check(not Util.is_safe_rel_path(bad), "unsafe path " + bad)
 
 
 func test_plan() -> void:
@@ -431,3 +436,8 @@ func test_security() -> void:
 	s.store_string("[sub_resource type=\"GDScript\"]\nscript/source = \"@tool\\nextends Node\"\n")
 	s.close()
 	check(not Security.risk_reason("s.tscn", dir.path_join("s.tscn")).is_empty(), "security flags embedded tool script")
+	var late := FileAccess.open(dir.path_join("late.gd"), FileAccess.WRITE)
+	late.store_string("#" + "x".repeat(20000) + "\n@tool\nextends Node\n")
+	late.close()
+	check(not Security.risk_reason("late.gd", dir.path_join("late.gd")).is_empty(), "security flags @tool after a long comment")
+	check(not Security.risk_reason("Player.cs", dir.path_join("n.gd")).is_empty() and not Security.risk_reason("Game.csproj", dir.path_join("n.gd")).is_empty(), "security flags C# code and build files")

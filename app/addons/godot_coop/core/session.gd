@@ -809,11 +809,14 @@ func _on_peer_msg(pid: int, m: Dictionary, ch: int) -> void:
 			_broadcast(out, CH_CTRL)
 			_activity(pid, "started a playtest for everyone" if out.action == "start" else "stopped the playtest", {}, "")
 		"proj_set":
-			if rec.role == "viewer":
+			# Settings are project-wide: viewers and folder-limited editors can't change them.
+			if rec.role == "viewer" or not Array(rec.paths).is_empty():
 				return
 			var out := m.duplicate()
 			out["by"] = pid
-			_broadcast(out, CH_CTRL, pid)
+			# Back to the sender too: everyone applies changes in the host's order, so when two
+			# people change the same setting at once they all end up with the same value.
+			_broadcast(out, CH_CTRL)
 			_activity(pid, "changed project settings", {}, "proj")
 		"proj_get":
 			_local_queue.append({"t": "proj_get", "from": pid})

@@ -5,7 +5,11 @@ extends RefCounted
 
 const EXEC_EXT := ["exe", "dll", "so", "dylib", "bat", "cmd", "ps1", "vbs", "sh", "com", "scr", "msi", "jar", "py"]
 const EXT_BINARY := ["gdextension"]
-const SCRIPT_EXT := ["gd", "cs"]
+const SCRIPT_EXT := ["gd"]
+## C# code and the build files around it: compiled into the assembly the editor loads, and MSBuild
+## files can run commands when the project is built.
+const DOTNET_EXT := ["cs", "csproj", "sln", "props", "targets"]
+const SCAN_LIMIT := 64 * 1024 * 1024
 
 
 ## Returns a human-readable reason when `rel` (with content at `abs_path`) is risky, else "".
@@ -17,13 +21,16 @@ static func risk_reason(rel: String, abs_path: String) -> String:
 		return "Native executable / shell script"
 	if ext in EXT_BINARY:
 		return "GDExtension (loads native code into the editor)"
+	if ext in DOTNET_EXT:
+		return "C# code or build file (runs when the project is built)"
 	if ext in SCRIPT_EXT:
 		if rel.begins_with("addons/"):
 			return "Script inside an editor plugin"
-		var text := _head(abs_path, 8192)
-		if text.find("@tool") != -1 or text.find("[Tool]") != -1:
+		if _contains(abs_path, "@tool".to_utf8_buffer()):
 			return "@tool script (runs inside the editor)"
 	if ext in ["tscn", "tres", "scn", "res"]:
+		if _head(abs_path, 4).begins_with("RSCC"):
+			return "Compressed binary scene/resource (can't be checked for embedded scripts)"
 		if _contains(abs_path, "@tool".to_utf8_buffer()):
 			return "Scene/resource with an embedded @tool script"
 	if rel == "project.godot":
@@ -41,7 +48,7 @@ static func _contains(abs_path: String, needle: PackedByteArray) -> bool:
 	var f := FileAccess.open(abs_path, FileAccess.READ)
 	if f == null:
 		return false
-	var b := f.get_buffer(mini(4 * 1024 * 1024, f.get_length()))
+	var b := f.get_buffer(mini(SCAN_LIMIT, f.get_length()))
 	var n := needle.size()
 	var i := b.find(needle[0])
 	while i != -1 and i + n <= b.size():
@@ -62,4 +69,4 @@ static func _head(abs_path: String, n: int) -> String:
 ## Fast path-only check used before any content exists (e.g. to label rows in a plan).
 static func path_might_be_risky(rel: String) -> bool:
 	var ext := rel.get_extension().to_lower()
-	return ext in EXEC_EXT or ext in EXT_BINARY or ext in SCRIPT_EXT or rel == "project.godot" or rel.begins_with("addons/")
+	return ext in EXEC_EXT or ext in EXT_BINARY or ext in SCRIPT_EXT or ext in DOTNET_EXT or rel == "project.godot" or rel.begins_with("addons/")

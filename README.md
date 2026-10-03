@@ -238,8 +238,10 @@ Host `web/join/index.html` anywhere static, e.g. GitHub Pages, and paste its URL
 ## Limitations
 
 - **Everyone needs the same Godot version.** This is enforced.
-- **Nodes added inside an instanced sub-scene ("editable children")** aren't live-synced. They reach teammates through the saved file when they reopen the scene. Editing the sub-scene itself is live.
-- **C# scripts, text resources and other files** sync when saved, not keystroke by keystroke.
+- **Nodes added inside an instanced sub-scene ("editable children")**, and overrides of nodes inside an instance, aren't live-synced. They reach teammates through the saved file when they reopen the scene. Editing the sub-scene itself is live, and "Make Local" is best done by one person at a time.
+- **C# scripts, shaders, text resources and other files** sync when saved, not keystroke by keystroke. If two people save the same one at the same moment, the host's last save wins and the other version is kept in `.coop/conflicts/`.
+- **Big values are sent whole.** Tile map data, polygons and animations sync as one value each, so two people painting the same TileMapLayer at the same moment can lose each other's strokes (the last one wins). Painting different layers, or taking turns, is fine.
+- **A property a `@tool` script or an animation preview keeps changing** is only sent once it settles, so teammates see the end result rather than every frame.
 - **If the host leaves, the session ends.** There's no host migration. Unsaved edits stay in each person's editor, so save before ending.
 - **3D follow** moves your editor camera directly until you navigate yourself.
 - **Testing so far:** the automated suites below, plus real sessions between two PCs on a LAN. Hole punching and UPnP across real-world routers haven't been widely tested yet, so reports are very welcome.
@@ -282,6 +284,7 @@ Every push runs all of these on GitHub Actions.
 | App | Plugin installer, `project.godot` editing, Godot version parsing/URLs/zip extraction | `… -s res://tests/app_tests.gd` |
 | Network | Relay + host + joiners in one process: approval, direct and relay-only joins, downloads, live file sync, quarantine, roles, concurrent script edits, scene ops and locks, chat, auto-reconnect, version refusal, kick, end | `… -s res://tests/net_tests.gd` |
 | Two editors | Two real headless Godot editors: every kind of scene edit, sub-resources, simultaneous typing, per-user undo, stale-buffer protection, file sync, settings, presence, locks, chat, follow, playtest tunnel, ending from the app | `python tests/editor/run_editor_tests.py` |
+| Two editors, edge cases | Reopening a script mid-session, saving while edits are in flight, Godot's own Edit > Undo, new scripts, Change Type, two people adding the same node name, a script attached before its file arrives, built-in `@tool` scripts, properties changed every frame, opposite reparents, a teammate saving an instanced scene while you have unsaved edits | `python tests/editor/run_editor_tests.py --suite edge` |
 | End-to-end, windowed | The app hosts → real editor; a second app joins from the invite (download, plugin install, launch) → screenshots of presence, carets, follow mode | `python tests/editor/run_visual_test.py` |
 
 ### How it works

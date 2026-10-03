@@ -5,7 +5,7 @@ extends RefCounted
 const APP_NAME := "Godot Co-op"
 const ADDON_PATH := "addons/godot_coop"
 const COOP_DIR := ".coop"
-const PROTOCOL_VERSION := 1
+const PROTOCOL_VERSION := 2
 const URL_SCHEME := "godotcoop"
 const DEFAULT_PORT := 47500
 const DEFAULT_RELAY_PORT := 47600
@@ -13,7 +13,12 @@ const DEFAULT_RELAY_PORT := 47600
 ## Folders that are never synced (first path segment).
 const IGNORED_ROOTS := [".godot", ".git", ".coop", ".svn", ".hg", ".import", ".mono", ".vs", ".idea"]
 ## File names that are never synced.
-const IGNORED_FILES := ["Thumbs.db", ".DS_Store", "desktop.ini", ".coopignore.local"]
+const IGNORED_FILES := ["thumbs.db", ".ds_store", "desktop.ini", ".coopignore.local"]   # compared lowercased
+## Folders never synced at any depth (a nested repository's hooks would run code).
+const IGNORED_ANYWHERE := [".git", ".svn", ".hg", ".coop"]
+const RESERVED_NAMES := ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$",
+	"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+	"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"]
 
 const USER_COLORS := [
 	Color("#ff6b6b"), Color("#4dabf7"), Color("#51cf66"), Color("#fcc419"),
@@ -84,11 +89,12 @@ static func same(a, b) -> bool:
 static func is_safe_rel_path(p: String) -> bool:
 	if p.is_empty() or p.length() > 400:
 		return false
-	if p.begins_with("/") or p.find("\\") != -1 or p.find(":") != -1:
+	if p.begins_with("/"):
 		return false
 	for i in p.length():
 		var ch := p.unicode_at(i)
-		if ch < 32 or ch == 127:
+		# Control characters, and characters Windows can't have in a name (\ : * ? " < > |).
+		if ch < 32 or ch == 127 or "\\:*?\"<>|".contains(char(ch)):
 			return false
 	for part in p.split("/"):
 		if part == "" or part == "." or part == "..":
@@ -97,8 +103,8 @@ static func is_safe_rel_path(p: String) -> bool:
 			return false
 		if part.length() > 200:
 			return false
-		var stem := part.get_basename().to_upper()
-		if stem in ["CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "LPT1", "LPT2", "LPT3"]:
+		# Windows device names, whatever follows the first dot ("NUL.tar.gz" is still NUL).
+		if part.get_slice(".", 0).to_upper() in RESERVED_NAMES:
 			return false
 	return true
 
@@ -121,13 +127,18 @@ static func rel_to_res(p: String) -> String:
 
 
 static func is_ignored(rel: String, patterns: PackedStringArray = PackedStringArray()) -> bool:
-	var first := rel.get_slice("/", 0)
-	if first in IGNORED_ROOTS:
+	# Compared without case: on Windows and macOS ".Coop/prefs.json" *is* ".coop/prefs.json".
+	var low := rel.to_lower()
+	var parts := low.split("/")
+	if parts[0] in IGNORED_ROOTS:
 		return true
-	if rel.begins_with(ADDON_PATH + "/"):
+	for i in parts.size() - 1:
+		if parts[i] in IGNORED_ANYWHERE:
+			return true
+	if low.begins_with(ADDON_PATH + "/"):
 		return true
 	var fname := rel.get_file()
-	if fname in IGNORED_FILES:
+	if fname.to_lower() in IGNORED_FILES or fname.begins_with("._"):
 		return true
 	if fname.ends_with(".tmp") or fname.ends_with("~") or fname.begins_with("~$") or fname.ends_with(".part"):
 		return true

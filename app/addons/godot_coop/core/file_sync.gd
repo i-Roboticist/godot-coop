@@ -25,6 +25,8 @@ signal quarantine_changed()
 signal deferred_changed()
 signal rejected(rel: String, reason: String)
 signal plan_preview(plan: Dictionary)
+## A version of `rel` was about to be lost (two people changed it at once): a copy is at `backup`.
+signal conflict_saved(rel: String, backup: String)
 
 const CHUNK := 48 * 1024
 const SMALL := 48 * 1024
@@ -45,6 +47,7 @@ var trust_risky := false
 var ignore_patterns := PackedStringArray()
 
 var base := {}                   # rel -> hash of the host's version we last synced
+var pending_up := {}             # joiner: rel -> base before our change, until the host confirms it
 var deferred := {}               # rel -> {"tmp": abs or "", "hash": h, "disk_hash": h0, "by": pid}
 var quarantine := {}             # rel -> {"tmp": abs, "hash": h, "by": pid, "reason": s, "from": pid}
 var stats := {"sent": 0, "received": 0}
@@ -65,6 +68,8 @@ var _expect_files := {}          # rel -> true (files we are waiting for during 
 var _syncing := false
 var _state_dirty := false
 var _state_saved_ms := 0
+var _hash_cache := {}            # rel -> [mtime, size, hash], so rescans skip unchanged files
+var _replaced: Array = []        # old spellings _place just removed (case-only renames)
 
 
 func setup(project_root: String, host: bool, my_peer_id: int) -> void:
@@ -105,6 +110,7 @@ func is_synced_path(rel: String) -> bool:
 func load_state() -> void:
 	var d = Util.read_json(_coop("sync_state.json"), {})
 	base = d.get("base", {}) if d is Dictionary else {}
+	pending_up = d.get("pending", {}) if d is Dictionary and d.get("pending") is Dictionary else {}
 
 
 func save_state(force := false) -> void:
@@ -113,7 +119,9 @@ func save_state(force := false) -> void:
 	_state_dirty = false
 	_state_saved_ms = Util.now_ms()
 	if not is_host:
-		Util.write_json(_coop("sync_state.json"), {"base": base})
+		Util.write_json(_coop("sync_state.json"), {"base": base, "pending": pending_up})
+	if force:
+		Util.write_json(_coop("hash_cache.json"), _hash_cache)
 
 
 func _set_base(rel: String, h: String) -> void:
@@ -128,6 +136,9 @@ func _set_base(rel: String, h: String) -> void:
 func full_scan() -> Dictionary:
 	var out := {}
 	_scan.clear()
+	if _hash_cache.is_empty():
+		var hc = Util.read_json(_coop("hash_cache.json"), {})
+		_hash_cache = hc if hc is Dictionary else {}
 	var stack: Array = [""]
 	while not stack.is_empty():
 		var d: String = stack.pop_back()
@@ -146,9 +157,22 @@ func full_scan() -> Dictionary:
 			if not is_synced_path(rel):
 				continue
 			var a := abs_path(rel)
-			out[rel] = FileAccess.get_sha256(a)
-			_scan[rel] = FileAccess.get_modified_time(a)
+			var mt := FileAccess.get_modified_time(a)
+			out[rel] = _cached_hash(rel, a, mt)
+			_scan[rel] = mt
 	return out
+
+
+## SHA-256 of a file, reusing the last one while its time stamp and size are unchanged (and it
+## wasn't modified in the last few seconds, which a one-second time stamp can't tell apart).
+func _cached_hash(rel: String, a: String, mt: int) -> String:
+	var size := FileAccess.get_size(a)
+	var c = _hash_cache.get(rel)
+	if c is Array and c.size() == 3 and int(c[0]) == mt and int(c[1]) == size and Util.unix_time() - mt > HOT_SECONDS:
+		return String(c[2])
+	var h := FileAccess.get_sha256(a)
+	_hash_cache[rel] = [mt, size, h]
+	return h
 
 
 ## Host: become the source of truth for the current disk contents.
@@ -223,6 +247,7 @@ func check_path(rel: String) -> void:
 	var h := FileAccess.get_sha256(a)
 	if h.is_empty():
 		return
+	_hash_cache[rel] = [mt, FileAccess.get_size(a), h]
 	if deferred.has(rel):
 		if h == String(deferred[rel].disk_hash):
 			return
@@ -239,12 +264,20 @@ func _on_local_change(rel: String, h: String) -> void:
 		for pid in _remote_peers():
 			queue_put(pid, rel, my_id, b)
 	else:
-		queue_put(1, rel, my_id, b, live_fn.is_valid() and live_fn.call(rel))
+		# Remember what the host had until it confirms ours, so a drop or a quit can't lose it.
+		if not pending_up.has(rel):
+			pending_up[rel] = b
+		queue_put(1, rel, my_id, String(pending_up[rel]), live_fn.is_valid() and live_fn.call(rel))
 	local_change.emit(rel, false)
 
 
 func _on_local_missing(rel: String) -> void:
 	if deferred.has(rel) or not base.has(rel):
+		return
+	if _case_insensitive_fs() and FileAccess.file_exists(abs_path(rel)):
+		# Only the case of the name changed ("Player.gd" -> "player.gd"): not a deletion.
+		base.erase(rel)
+		_state_dirty = true
 		return
 	var b := String(base[rel])
 	_set_base(rel, "")
@@ -252,8 +285,19 @@ func _on_local_missing(rel: String) -> void:
 		for pid in _remote_peers():
 			queue_del(pid, rel, my_id, b)
 	else:
-		queue_del(1, rel, my_id, b)
+		if not pending_up.has(rel):
+			pending_up[rel] = b
+		queue_del(1, rel, my_id, String(pending_up[rel]))
 	local_change.emit(rel, true)
+
+
+static func _case_insensitive_fs() -> bool:
+	return OS.get_name() in ["Windows", "macOS"]
+
+
+## True if `rel` exists with exactly this spelling (on Windows "player.gd" also opens "Player.gd").
+func _exact_name(rel: String) -> bool:
+	return DirAccess.get_files_at(abs_path(rel).get_base_dir()).has(rel.get_file())
 
 
 func _remote_peers() -> Array:
@@ -263,16 +307,19 @@ func _remote_peers() -> Array:
 # ---------------------------------------------------------------------------------------------
 # Initial sync / reconnect (three-way)
 
-## Client: starts a sync. With preview=true the host only answers with the plan (used by the
-## companion to show the download size and risky files before anything is written).
 func begin_sync(preview := false) -> void:
 	var cur := full_scan()
 	var files := {}
+	# For changes the host hasn't confirmed, report the version we started from, so the planner
+	# sees them as ours (upload) rather than the host's (download over them).
 	for rel in cur:
-		files[rel] = [cur[rel], String(base.get(rel, ""))]
+		files[rel] = [cur[rel], String(pending_up.get(rel, base.get(rel, "")))]
 	for rel in base:
 		if not files.has(rel) and is_synced_path(rel):
-			files[rel] = ["", String(base[rel])]
+			files[rel] = ["", String(pending_up.get(rel, base[rel]))]
+	for rel in pending_up:
+		if not files.has(rel) and is_synced_path(rel):
+			files[rel] = ["", String(pending_up[rel])]
 	_syncing = not preview
 	send_fn.call(1, {"t": "sync_begin", "files": files, "preview": preview, "project_godot": manage_project_godot})
 
@@ -382,13 +429,23 @@ func _client_handle_plan(msg: Dictionary) -> void:
 			Util.ensure_dir(backup.get_base_dir())
 			DirAccess.copy_absolute(abs_path(rel), backup)
 			conflict_backups.append(backup)
+	var uploading := {}
 	for rel in msg.get("upload", []):
-		if Util.is_safe_rel_path(rel):
-			var h := _disk_hash(rel)
-			_set_base(rel, h)
-			queue_put(1, rel, my_id, "")
+		# Only files we actually sync: the host can't make us send anything else.
+		if typeof(rel) == TYPE_STRING and Util.is_safe_rel_path(rel) and is_synced_path(rel):
+			var was := String(pending_up.get(rel, base.get(rel, "")))
+			_set_base(rel, _disk_hash(rel))
+			pending_up[rel] = was
+			uploading[rel] = true
+			queue_put(1, rel, my_id, was)
 	for rel in msg.get("host_delete", []):
-		_set_base(rel, "")
+		if typeof(rel) == TYPE_STRING:
+			_set_base(rel, "")
+	# Everything else the host has now settled.
+	for rel in pending_up.keys():
+		if not uploading.has(rel):
+			pending_up.erase(rel)
+	_state_dirty = true
 	_expect_total = int(msg.get("total", 0))
 	_expect_done = 0
 	_expect_files.clear()
@@ -396,9 +453,6 @@ func _client_handle_plan(msg: Dictionary) -> void:
 		_expect_files[rel] = true
 	progress.emit(0, _expect_total, "")
 
-
-# ---------------------------------------------------------------------------------------------
-# Outgoing transfers
 
 func _outq(dest: int) -> Dictionary:
 	if not _out.has(dest):
@@ -413,7 +467,17 @@ func queue_put(dest: int, rel: String, by: int, base_hash: String, live := false
 		var j: Dictionary = q.queue[i]
 		if j.kind == "put" and j.rel == rel:
 			q.queue.remove_at(i)
-	q.queue.append({"kind": "put", "rel": rel, "by": by, "base": base_hash, "live": live})
+	var job := {"kind": "put", "rel": rel, "by": by, "base": base_hash, "live": live}
+	# A file's .import / .uid go before the file itself, so the receiving editor imports it with
+	# the sender's settings and UID instead of making up its own (and sending those back).
+	if rel.ends_with(".import") or rel.ends_with(".uid"):
+		var main_rel := rel.trim_suffix(".import") if rel.ends_with(".import") else rel.trim_suffix(".uid")
+		for i in q.queue.size():
+			var j: Dictionary = q.queue[i]
+			if j.kind == "put" and j.rel == main_rel:
+				q.queue.insert(i, job)
+				return
+	q.queue.append(job)
 
 
 func queue_del(dest: int, rel: String, by: int, base_hash: String) -> void:
@@ -561,8 +625,16 @@ func handle(from: int, msg: Dictionary) -> void:
 				for rel in msg.get("rels", []):
 					if typeof(rel) == TYPE_STRING and base.has(rel):
 						queue_put(from, rel, 1, "")
+		"file_ok":
+			# The host has our change (or our delete): it's safe now.
+			if not is_host:
+				var rel := String(msg.get("rel", ""))
+				if pending_up.has(rel) and String(base.get(rel, "")) == String(msg.get("hash", "")):
+					pending_up.erase(rel)
+					_state_dirty = true
 		"file_reject":
 			if not is_host:
+				pending_up.erase(String(msg.get("rel", "")))
 				rejected.emit(String(msg.get("rel", "")), String(msg.get("reason", "")))
 
 
@@ -573,6 +645,10 @@ func _author(from: int, msg: Dictionary) -> int:
 
 func _valid_incoming(from: int, rel, msg: Dictionary) -> bool:
 	if typeof(rel) != TYPE_STRING or not Util.is_safe_rel_path(rel) or not is_synced_path(rel):
+		return false
+	if is_host and rel == "project.godot":
+		# Project settings go through the settings sync, where autoloads and plugins wait for review.
+		send_fn.call(from, {"t": "file_reject", "rel": rel, "reason": "Project settings are synced separately."})
 		return false
 	if is_host and not (can_write_fn.is_valid() and can_write_fn.call(from, rel)):
 		send_fn.call(from, {"t": "file_reject", "rel": rel, "reason": "You don't have write access to this file."})
@@ -602,7 +678,7 @@ func _recv_put(from: int, msg: Dictionary) -> void:
 		return
 	f.store_buffer(data)
 	f.close()
-	_commit(from, rel, tmp, String(msg.hash), _author(from, msg), data.size(), bool(msg.get("live", false)))
+	_commit(from, rel, tmp, String(msg.hash), _author(from, msg), data.size(), bool(msg.get("live", false)), String(msg.get("base", "")))
 
 
 func _recv_begin(from: int, msg: Dictionary) -> void:
@@ -616,6 +692,7 @@ func _recv_begin(from: int, msg: Dictionary) -> void:
 	_in["%d:%d" % [from, int(msg.xid)]] = {
 		"rel": rel, "hash": String(msg.get("hash", "")), "size": size, "file": f, "tmp": tmp,
 		"got": 0, "by": _author(from, msg), "skip": f == null, "live": bool(msg.get("live", false)),
+		"base": String(msg.get("base", "")),
 	}
 
 
@@ -658,7 +735,7 @@ func _recv_end(from: int, msg: Dictionary) -> void:
 		if not is_host:
 			send_fn.call(1, {"t": "file_get", "rels": [t.rel]})
 		return
-	_commit(from, t.rel, t.tmp, t.hash, t.by, t.size, bool(t.get("live", false)))
+	_commit(from, t.rel, t.tmp, t.hash, t.by, t.size, bool(t.get("live", false)), String(t.get("base", "")))
 
 
 func _recv_del(from: int, msg: Dictionary) -> void:
@@ -666,6 +743,7 @@ func _recv_del(from: int, msg: Dictionary) -> void:
 	if not _valid_incoming(from, rel, msg):
 		return
 	if is_host and not base.has(rel):
+		_confirm(from, rel, "")
 		return
 	if is_host:
 		var b := String(base.get(rel, ""))
@@ -673,12 +751,34 @@ func _recv_del(from: int, msg: Dictionary) -> void:
 		for pid in _remote_peers():
 			if pid != from:
 				queue_del(pid, rel, _author(from, msg), b)
+		_confirm(from, rel, "")
 	else:
 		_apply_delete_local(rel, _author(from, msg))
 
 
+## Host: tell the sender its change got here. Queued behind anything already on its way to them,
+## so a version the host had before theirs arrives first (and they know to keep their own).
+func _confirm(from: int, rel: String, h: String) -> void:
+	if is_host and from != my_id:
+		_queue_msg(from, {"t": "file_ok", "rel": rel, "hash": h})
+
+
+func _save_conflict_copy(rel: String, src: String, tag := "") -> void:
+	if not FileAccess.file_exists(src):
+		return
+	var stamp := Time.get_datetime_string_from_system().replace(":", "-")
+	var name := rel
+	if not tag.is_empty():
+		name = rel.get_basename() + "." + tag + ("." + rel.get_extension() if not rel.get_extension().is_empty() else "")
+	var backup := _coop("conflicts").path_join(stamp).path_join(name)
+	Util.ensure_dir(backup.get_base_dir())
+	DirAccess.copy_absolute(src, backup)
+	conflict_backups.append(backup)
+	conflict_saved.emit(rel, backup)
+
+
 ## A verified file has arrived in `tmp`; decide whether it goes in place, waits for review, or is deferred.
-func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int, live := false) -> void:
+func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int, live := false, sender_base := "") -> void:
 	if _expect_files.has(rel):
 		_expect_files.erase(rel)
 		_expect_done += size
@@ -686,6 +786,7 @@ func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int,
 	var unchanged := String(base.get(rel, "")) == h and _disk_hash(rel) == h and not deferred.has(rel)
 	if unchanged:
 		DirAccess.remove_absolute(tmp)
+		_confirm(from, rel, h)
 		return
 	if not trust_risky:
 		var reason := Security.risk_reason(rel, tmp)
@@ -694,15 +795,31 @@ func _commit(from: int, rel: String, tmp: String, h: String, by: int, size: int,
 			Util.move_file(tmp, qtmp)
 			if quarantine.has(rel):
 				DirAccess.remove_absolute(quarantine[rel].tmp)
-			quarantine[rel] = {"tmp": qtmp, "hash": h, "by": by, "from": from, "reason": reason, "live": live}
+			quarantine[rel] = {"tmp": qtmp, "hash": h, "by": by, "from": from, "reason": reason, "live": live, "sbase": sender_base}
 			quarantine_changed.emit()
+			_confirm(from, rel, h)
 			return
-	_accept(from, rel, tmp, h, by, live)
+	_accept(from, rel, tmp, h, by, live, sender_base)
 
 
-func _accept(from: int, rel: String, tmp: String, h: String, by: int, live := false) -> void:
+func _accept(from: int, rel: String, tmp: String, h: String, by: int, live := false, sender_base := "") -> void:
 	var prev_base := String(base.get(rel, ""))
-	_set_base(rel, h)
+	var dest := abs_path(rel)
+	if not is_host:
+		if pending_up.has(rel):
+			# Our own change to this file is on its way to the host, which got this version first
+			# and will replace it with ours: keep ours (and a copy of this one, just in case).
+			_save_conflict_copy(rel, tmp, "theirs")
+			DirAccess.remove_absolute(tmp)
+			return
+		if FileAccess.file_exists(dest):
+			var cur := _disk_hash(rel)
+			if cur != h and cur != prev_base:
+				# Changed here and not sent yet: keep a copy before it's replaced.
+				_save_conflict_copy(rel, dest)
+	elif from != my_id and prev_base != h and sender_base != prev_base and FileAccess.file_exists(dest):
+		# Two people saved it at once and the sender edited an older version: keep the host's copy.
+		_save_conflict_copy(rel, dest)
 	if is_open_fn.is_valid() and is_open_fn.call(rel):
 		var qtmp := _coop("deferred").path_join(Util.random_hex(6) + "_" + rel.get_file())
 		Util.move_file(tmp, qtmp)
@@ -711,43 +828,83 @@ func _accept(from: int, rel: String, tmp: String, h: String, by: int, live := fa
 		deferred[rel] = {"tmp": qtmp, "hash": h, "disk_hash": _disk_hash(rel), "by": by}
 		deferred_changed.emit()
 		if is_host:
+			# The host's list of versions moves on now. A joiner's only once the file is written
+			# (flush_deferred): until then its disk still has the old one.
+			_set_base(rel, h)
 			file_received.emit(rel, by, qtmp, live)
 	else:
-		_place(rel, tmp)
+		_replaced.clear()
+		if not _place(rel, tmp):
+			rejected.emit(rel, "it couldn't be written here (is it open in another program?)")
+			return
+		_set_base(rel, h)
 		if is_host:
-			file_received.emit(rel, by, abs_path(rel), live)
+			file_received.emit(rel, by, dest, live)
 		file_applied.emit(rel, by, false)
 	if is_host:
+		_confirm(from, rel, h)
 		for pid in _remote_peers():
 			if pid != from:
 				queue_put(pid, rel, by, prev_base)
+	# A case-only rename replaced the old spelling: forget it, and tell peers whose file systems
+	# keep both spellings apart.
+	for old in _replaced:
+		if base.has(old):
+			var b := String(base[old])
+			_set_base(old, "")
+			if is_host:
+				for pid in _remote_peers():
+					if pid != from:
+						queue_del(pid, old, by, b)
+	_replaced.clear()
 
 
-func _place(rel: String, tmp: String) -> void:
+## Moves a received file into place. False if it couldn't be written.
+func _place(rel: String, tmp: String) -> bool:
 	var dest := abs_path(rel)
-	Util.ensure_dir(dest.get_base_dir())
+	var dir := dest.get_base_dir()
+	Util.ensure_dir(dir)
+	if _case_insensitive_fs():
+		# A case-only rename ("Player.gd" -> "player.gd") on a file system that ignores case:
+		# remove the old spelling first, or the file would keep it.
+		var want := rel.get_file()
+		for f in DirAccess.get_files_at(dir):
+			if f != want and f.to_lower() == want.to_lower():
+				DirAccess.remove_absolute(dir.path_join(f))
+				var old := (rel.get_base_dir() + "/" + f).trim_prefix("/")
+				_scan.erase(old)
+				_replaced.append(old)
 	if DirAccess.rename_absolute(tmp, dest) != OK:
 		# Target locked (e.g. open in another program): fall back to copying.
 		DirAccess.copy_absolute(tmp, dest)
 		DirAccess.remove_absolute(tmp)
+	if not FileAccess.file_exists(dest):
+		_scan.erase(rel)
+		return false
 	_scan[rel] = FileAccess.get_modified_time(dest)
+	return true
 
 
 func _apply_delete_local(rel: String, by: int) -> void:
-	_set_base(rel, "")
+	if not is_host and pending_up.has(rel):
+		# We changed it and the host will get our version after this delete: keep it.
+		return
 	if is_open_fn.is_valid() and is_open_fn.call(rel):
+		if is_host:
+			_set_base(rel, "")
 		deferred[rel] = {"tmp": "", "hash": "", "disk_hash": _disk_hash(rel), "by": by}
 		deferred_changed.emit()
 		return
+	var prev := String(base.get(rel, ""))
+	_set_base(rel, "")
 	var a := abs_path(rel)
-	if FileAccess.file_exists(a):
+	if FileAccess.file_exists(a) and _exact_name(rel):
+		if not is_host and _disk_hash(rel) != prev:
+			_save_conflict_copy(rel, a)
 		DirAccess.remove_absolute(a)
 	_scan.erase(rel)
 	file_applied.emit(rel, by, true)
 
-
-# ---------------------------------------------------------------------------------------------
-# Deferred writes (file is open in the editor) and quarantine review
 
 ## Call when the editor closes `rel`: writes the newest incoming version in place.
 func flush_deferred(rel: String) -> void:
@@ -764,13 +921,18 @@ func flush_deferred(rel: String) -> void:
 		return
 	if String(d.tmp).is_empty():
 		var a := abs_path(rel)
-		if FileAccess.file_exists(a):
+		if FileAccess.file_exists(a) and _exact_name(rel):
 			DirAccess.remove_absolute(a)
 		_scan.erase(rel)
+		if not is_host:
+			_set_base(rel, "")
 		file_applied.emit(rel, int(d.by), true)
-	else:
-		_place(rel, d.tmp)
+	elif _place(rel, d.tmp):
+		if not is_host:
+			_set_base(rel, String(d.hash))
 		file_applied.emit(rel, int(d.by), false)
+	else:
+		rejected.emit(rel, "it couldn't be written here (is it open in another program?)")
 	deferred_changed.emit()
 
 
@@ -789,7 +951,7 @@ func accept_quarantined(rel: String) -> void:
 	quarantine.erase(rel)
 	var tmp := _coop("tmp").path_join(Util.random_hex(6) + ".part")
 	Util.move_file(q.tmp, tmp)
-	_accept(int(q.from), rel, tmp, String(q.hash), int(q.by), bool(q.get("live", false)))
+	_accept(int(q.from), rel, tmp, String(q.hash), int(q.by), bool(q.get("live", false)), String(q.get("sbase", "")))
 	quarantine_changed.emit()
 
 

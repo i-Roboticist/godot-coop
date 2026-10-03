@@ -182,8 +182,10 @@ func _wire_files() -> void:
 	var f = session.files
 	f.is_open_fn = _is_open_in_editor
 	f.live_fn = func(rel: String): return script_sync.is_live("res://" + rel)
-	f.trust_risky = trust_host
+	# "Trust the host" is for joining. Joiners' files are never trusted automatically when hosting.
+	f.trust_risky = trust_host and not session.is_host
 	f.file_applied.connect(_on_file_applied)
+	f.conflict_saved.connect(func(rel, backup): toast("%s was changed by two people at once. A copy of the other version is in %s." % [rel, backup.trim_prefix(project_dir + "/")], 1))
 	f.quarantine_changed.connect(_on_quarantine_changed)
 	f.deferred_changed.connect(refresh_ui)
 	f.rejected.connect(func(rel, why): toast("Change to %s was undone: %s" % [rel, why], 1))
@@ -323,6 +325,8 @@ func _on_initial_sync_done(_summary: Dictionary) -> void:
 	else:
 		scene_sync.session_resumed()
 		script_sync.session_resumed()
+		# Settings changed while we were away only reach us this way.
+		session.send({"t": "proj_get"})
 
 
 func _on_message(m: Dictionary) -> void:
@@ -564,4 +568,4 @@ func set_trust(on: bool) -> void:
 	prefs.trust_host = on
 	save_prefs()
 	if session != null and session.files != null:
-		session.files.trust_risky = on
+		session.files.trust_risky = on and not session.is_host
