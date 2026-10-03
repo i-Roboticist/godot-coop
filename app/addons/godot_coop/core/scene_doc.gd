@@ -19,6 +19,7 @@ var watchers := {}       # peer id -> true
 var creator := 0         # peer asked to upload the first snapshot (0 = none pending)
 var waiting: Array = []  # peers waiting for the doc to exist
 var lock_holder := 0     # peer id holding the edit lock (0 = unlocked)
+var last_cseq := {}      # peer id -> last batch of theirs processed (tells a reconnecting peer what got through)
 
 
 func _init(p_path := "") -> void:

@@ -127,3 +127,52 @@ func code_edit_for(path: String) -> CodeEdit:
 
 func _live(path: String) -> bool:
 	return P.script_sync.trackers.has(path) and P.script_sync.trackers[path].ready
+
+
+## What the Scene dock's "Change Type" does: the new node takes the old one's place, name and children.
+func replace_node(old: Node, new_node: Node) -> void:
+	new_node.name = old.name
+	var ur := EditorInterface.get_editor_undo_redo()
+	ur.create_action("test: change type")
+	ur.add_do_method(old, "replace_by", new_node, true)
+	ur.add_do_reference(new_node)
+	ur.add_undo_method(new_node, "replace_by", old, true)
+	ur.add_undo_reference(old)
+	ur.commit_action()
+
+
+func reparent_node(node: Node, new_parent: Node) -> void:
+	var old_parent := node.get_parent()
+	var ur := EditorInterface.get_editor_undo_redo()
+	ur.create_action("test: reparent")
+	ur.add_do_method(node, "reparent", new_parent, false)
+	ur.add_undo_method(node, "reparent", old_parent, false)
+	ur.commit_action()
+
+
+func write_shared(name: String, text: String) -> void:
+	var f := FileAccess.open(shared.path_join(name), FileAccess.WRITE)
+	f.store_string(text)
+	f.close()
+
+
+func read_shared(name: String) -> String:
+	return FileAccess.get_file_as_string(shared.path_join(name))
+
+
+func child_names(n: Node) -> Array:
+	var out := []
+	for c in n.get_children():
+		out.append(String(c.name))
+	out.sort()
+	return out
+
+
+## "Name<Parent" for every node saved in the scene, sorted: two editors agree iff these match.
+func tree_text(root: Node) -> String:
+	var out := []
+	for n in root.find_children("*", "", true, false):
+		if n.owner == root:
+			out.append("%s<%s" % [n.name, n.get_parent().name])
+	out.sort()
+	return ",".join(out)

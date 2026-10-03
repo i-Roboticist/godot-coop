@@ -274,6 +274,11 @@ func _init() -> void:
 	pump(300)
 	ed1.send({"t": "sc_ops", "path": "res://levels/level1.tscn", "cseq": 2, "ops": [{"k": "set", "id": "n1", "props": {"position": Vector2(9, 9)}}]}, Session.CH_LIVE)
 	check(pump(2000, func(): return sc[ed1.my_pid].any(func(m): return m.t == "sc_reject" and m.reason == "locked")), "locked scene rejects other editors")
+	# The scene state tells an editor which of its batches the host processed, so after a
+	# reconnect it knows what to send again.
+	sc[ed1.my_pid].clear()
+	ed1.send({"t": "sc_get", "path": "res://levels/level1.tscn"}, Session.CH_LIVE)
+	check(pump(2000, func(): return sc[ed1.my_pid].any(func(m): return m.t == "sc_state" and int(m.get("acked", -1)) == 1)), "scene state reports the last batch the host processed")
 
 	# --- Chat / activity / presence ---------------------------------------------------------------
 	var chats := []

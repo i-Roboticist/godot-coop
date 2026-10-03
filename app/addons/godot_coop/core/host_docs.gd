@@ -120,7 +120,8 @@ func is_watching(pid: int, rel: String) -> bool:
 # --- scenes ----------------------------------------------------------------------------------
 
 func _send_state(pid: int, doc) -> void:
-	_send(pid, {"t": "sc_state", "path": doc.path, "epoch": doc.epoch, "rev": doc.rev, "nodes": doc.snapshot(), "lock": doc.lock_holder})
+	_send(pid, {"t": "sc_state", "path": doc.path, "epoch": doc.epoch, "rev": doc.rev, "nodes": doc.snapshot(), "lock": doc.lock_holder,
+		"acked": int(doc.last_cseq.get(pid, 0))})
 
 
 func _sc_open(pid: int, path: String) -> void:
@@ -194,6 +195,7 @@ func _sc_ops(pid: int, msg: Dictionary) -> void:
 	var ops = msg.get("ops", [])
 	if not (ops is Array):
 		return
+	doc.last_cseq[pid] = maxi(cseq, int(doc.last_cseq.get(pid, 0)))
 	var applied := []
 	var descriptions := []
 	var bad := false

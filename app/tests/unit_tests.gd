@@ -374,6 +374,45 @@ func test_wire() -> void:
 	check(w.to_wire(Vector3(1, 2, 3)) == Vector3(1, 2, 3), "wire primitive")
 	check(Util.same(w.to_wire(shape), w.to_wire(shape)), "wire stable for comparison")
 	check(Wire.describe(Vector2(1, 2)) == "(1.0, 2.0)", "wire describe")
+	# "Make Unique" on the sender: a new id for an object the receiver already shares between
+	# slots must give a new object, not adopt the shared one.
+	var shared_shape := RectangleShape2D.new()
+	var rx := Wire.new()
+	var sender := Wire.new()
+	var original := RectangleShape2D.new()
+	rx.from_wire(sender.to_wire(original), shared_shape)
+	var unique := original.duplicate()
+	unique.size = Vector2(99, 99)
+	var got = rx.from_wire(sender.to_wire(unique), shared_shape)
+	check(got != shared_shape and got is RectangleShape2D and got.size == Vector2(99, 99) and shared_shape.size != Vector2(99, 99), "wire: a resource made unique stays unique")
+	# Animations: tracks deleted by the sender must go away here too.
+	var anim := Animation.new()
+	for i in 3:
+		anim.add_track(Animation.TYPE_VALUE)
+		anim.track_set_path(i, NodePath("Node%d:position" % i))
+	var aw := Wire.new()
+	var local_anim := anim.duplicate()
+	aw.from_wire(Wire.new().to_wire(anim), local_anim)
+	var sw := Wire.new()
+	var wire_anim = sw.to_wire(anim)
+	anim.remove_track(1)
+	var shrunk = sw.to_wire(anim)
+	var aw2 := Wire.new()
+	var target_anim := Animation.new()
+	aw2.from_wire(wire_anim, target_anim)
+	aw2.from_wire(shrunk, target_anim)
+	check(target_anim.get_track_count() == 2 and String(target_anim.track_get_path(1)) == "Node2:position", "wire: deleted animation tracks are removed (%d tracks)" % target_anim.get_track_count())
+	# A built-in @tool script would run in the receiver's editor: refused unless trusted.
+	var tool_script := GDScript.new()
+	tool_script.source_code = "@tool\nextends Node\n"
+	var plain_script := GDScript.new()
+	plain_script.source_code = "extends Node\n"
+	var guard := Wire.new()
+	check(guard.from_wire(Wire.new().to_wire(tool_script)) == null and guard.blocked_code, "wire refuses a built-in @tool script")
+	check(guard.from_wire(Wire.new().to_wire(plain_script)) is GDScript, "wire accepts a plain built-in script")
+	var trusting := Wire.new()
+	trusting.allow_code = true
+	check(trusting.from_wire(Wire.new().to_wire(tool_script)) is GDScript, "wire accepts a built-in @tool script when trusted")
 
 
 func test_security() -> void:

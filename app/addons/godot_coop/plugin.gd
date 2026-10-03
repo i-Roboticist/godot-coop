@@ -375,9 +375,13 @@ func _on_file_applied(rel: String, _by: int, deleted: bool) -> void:
 	_fs_scan_at = Util.now_ms() + 400
 	var res := "res://" + rel
 	var ext := rel.get_extension().to_lower()
+	if ext in ["tscn", "scn"]:
+		# Open scenes that instance it are refreshed (whether or not it's still in the cache).
+		scene_sync.invalidate_instance_cache(res)
+		if not deleted:
+			_changed_scenes[res] = true
+		return
 	if deleted or not ResourceLoader.has_cached(res):
-		if ext in ["tscn", "scn"]:
-			scene_sync.invalidate_instance_cache(res)
 		return
 	# Resources already loaded in memory would otherwise keep their old contents.
 	if ext in ["gd", "gdshader", "gdshaderinc"]:
@@ -388,9 +392,6 @@ func _on_file_applied(rel: String, _by: int, deleted: bool) -> void:
 			r.reload(true)
 		elif r is Shader and r.code != text:
 			r.code = text
-	elif ext in ["tscn", "scn"]:
-		scene_sync.invalidate_instance_cache(res)
-		_changed_scenes[res] = true
 	elif ext in ["tres", "res"]:
 		ResourceLoader.load(res, "", ResourceLoader.CACHE_MODE_REPLACE)
 

@@ -18,6 +18,8 @@ var node_to_id: Callable          # func(Node) -> String
 var id_to_node: Callable          # func(String) -> Node
 var missing_resource := false     # set when from_wire hit a res:// file that doesn't exist (yet)
 var unresolved_node := false      # set when from_wire hit a node id that doesn't exist (yet)
+var allow_code := false           # accept embedded scripts that would run in the editor (@tool)
+var blocked_code := false         # set when from_wire skipped one of those
 
 var _res_by_rid := {}
 var _rid_by_obj := {}
@@ -159,12 +161,23 @@ func _load_ext(path: String):
 func _sub_from_wire(w: Dictionary, current):
 	var rid := String(w.get("$sub", ""))
 	var cls := String(w.get("cls", ""))
+	# A built-in @tool script would run in this editor the moment it's attached: same rule as for
+	# files, it needs the sender to be trusted.
+	if not allow_code and ClassDB.is_parent_class(cls, "Script") and w.get("p") is Dictionary:
+		var src = w.p.get("script/source", w.p.get("source_code", ""))
+		if src is String and (src.contains("@tool") or src.contains("[Tool]")):
+			blocked_code = true
+			return null
 	var res: Resource = _res_by_rid.get(rid)
 	if res != null and res.get_class() != cls:
 		res = null
+	# Adopt the object already in the slot (the first sync of an existing scene), unless it's
+	# already known under another id: then other slots share it and this one was made unique.
 	if res == null and current is Resource and current.get_class() == cls and not is_external(current):
-		res = current
-		_register(rid, res)
+		var known = _rid_by_obj.get(current.get_instance_id())
+		if known == null or known == rid:
+			res = current
+			_register(rid, res)
 	if res == null:
 		if not ClassDB.class_exists(cls) or not ClassDB.can_instantiate(cls) or not ClassDB.is_parent_class(cls, "Resource"):
 			return null
@@ -179,6 +192,10 @@ func _sub_from_wire(w: Dictionary, current):
 		var s = from_wire(props["script"])
 		if res.get_script() != s:
 			res.set_script(s)
+	if res is Animation:
+		# Tracks are indexed properties ("tracks/3/path"): rebuild them, or tracks deleted or
+		# reordered by the sender would linger here.
+		res.clear()
 	for k in props:
 		if k == "script":
 			continue
@@ -186,7 +203,7 @@ func _sub_from_wire(w: Dictionary, current):
 		var nv = from_wire(props[k], cur)
 		if typeof(nv) != typeof(cur) or nv != cur:
 			res.set(k, nv)
-	if res is Script and props.has("source_code"):
+	if res is Script and (props.has("script/source") or props.has("source_code")):
 		res.reload()
 	return res
 
