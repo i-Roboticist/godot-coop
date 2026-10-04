@@ -62,7 +62,8 @@ func rmdir(path: String) -> void:
 	DirAccess.remove_absolute(path)
 
 
-func _init() -> void:
+# (Not _init: TLS certificates, which the rendezvous services need, load after it runs.)
+func _initialize() -> void:
 	base_dir = OS.get_user_data_dir().path_join("net_tests")
 	rmdir(base_dir)
 	Util.ensure_dir(base_dir)
@@ -146,7 +147,7 @@ func _init() -> void:
 	check(pump(8000, func(): return join_requests.size() == 2), "relay joiner request arrives")
 	host.approve(join_requests[1].id, "editor")
 	check(pump(6000, func(): return ed2.state == "connected"), "relay joiner admitted")
-	check(ed2.connection_kind == "relay" or ed2.connection_kind == "direct", "relay joiner connected via %s" % ed2.connection_kind)
+	check(ed2.connection_kind in ["relay", "direct", "internet"], "relay joiner connected via %s" % ed2.connection_kind)
 	ed2.files.trust_risky = true
 	check(pump(12000, func(): return not ed2.files.is_syncing() and read(ed2_dir, "player.gd") == read(host_dir, "player.gd")), "relay joiner synced files")
 	check(not FileAccess.file_exists(ed2_dir.path_join("project.godot")), "editor-mode sync leaves project.godot to settings sync")
@@ -439,6 +440,42 @@ func _init() -> void:
 	check(not denials.is_empty() and denials[0].code == "version" and int(denials[0].need.minor) == Engine.get_version_info().minor, "refusal says which version is needed")
 	sessions.erase(odd)
 
+	# --- Internet: an invite with no LAN address and no relay, so the joiner has to find the host
+	#     through the public rendezvous services, learn its addresses (STUN) and dial them --------
+	if OS.get_environment("GODOT_COOP_OFFLINE").is_empty():
+		test_rendezvous_transports()
+		var inet := Invite.decode(code)
+		check(int(inet.flags) & Invite.FLAG_INTERNET, "invites say the host answers over the internet")
+		inet.cands = []
+		inet.relay_host = ""
+		inet.relay_port = 0
+		inet.room = ""
+		var far_dir := base_dir.path_join("far")
+		var far := Session.new()
+		sessions.append(far)
+		var asked := join_requests.size()
+		var t0 := Time.get_ticks_msec()
+		far.join(Invite.encode(inet), {"name": "Far", "color": "fab005", "uuid": "far-uuid"}, "editor", far_dir)
+		check(pump(30000, func(): return join_requests.size() > asked), "internet joiner reaches the host (%d ms, %s)" % [Time.get_ticks_msec() - t0, far.state_detail])
+		if join_requests.size() > asked:
+			host.approve(join_requests[asked].id, "editor")
+		check(pump(6000, func(): return far.state == "connected"), "internet joiner admitted")
+		check(far.connection_kind == "internet", "it came over an internet slot (%s)" % far.connection_kind)
+		check(far.rdv == null, "the joiner leaves the rendezvous services once connected")
+		far.files.trust_risky = true
+		check(pump(15000, func(): return not far.files.is_syncing() and read(far_dir, "player.gd") == read(host_dir, "player.gd")), "files sync over the internet path")
+		check(host.public_ip != "" or host.nat_type == "blocked", "host learned its public address (%s, %s)" % [host.public_ip, host.nat_type])
+		print("  host internet status: ", host.internet_status())
+		far.leave()
+		pump(300)
+		sessions.erase(far)
+		var slot_closed := pump(50000, func(): return host.net.p2p_count() == 0)
+		var left := []
+		for sid in host.net._slots:
+			var sl: Dictionary = host.net._slots[sid]
+			left.append("%s linked=%d had=%s until=%d" % [sid, sl.linked, sl.had_link, int(sl.until) - Time.get_ticks_msec()])
+		check(slot_closed, "the host closes the slot when the joiner leaves %s" % [left])
+
 	# --- Kick / end ------------------------------------------------------------------------------
 	host.kick(ed2.my_pid)
 	check(pump(3000, func(): return ed2.state == "ended"), "kicked joiner is told")
@@ -447,3 +484,34 @@ func _init() -> void:
 	relay.stop()
 	print("net tests: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures > 0 else 0)
+
+
+## Each public message service on its own, so one quietly breaking can't hide behind the others.
+func test_rendezvous_transports() -> void:
+	const Rendezvous := preload("res://addons/godot_coop/core/rendezvous.gd")
+	var secret := Util.random_bytes(16)
+	for kind in ["mqtt", "ntfy"]:
+		var a := Rendezvous.new()
+		var b := Rendezvous.new()
+		for r in [a, b]:
+			r.use_mqtt = kind == "mqtt"
+			r.use_ntfy = kind == "ntfy"
+			r.add_channel("c", secret)
+		var got := []
+		b.received.connect(func(_ch, m): got.append(m))
+		var ready := func(): return a.connected_count() > 0 and b.connected_count() > 0
+		var end := Time.get_ticks_msec() + 15000
+		while Time.get_ticks_msec() < end and not ready.call():
+			a.poll()
+			b.poll()
+			OS.delay_msec(5)
+		var t0 := Time.get_ticks_msec()
+		a.publish("c", {"t": "ping", "n": 7})
+		end = Time.get_ticks_msec() + 10000
+		while Time.get_ticks_msec() < end and got.is_empty():
+			a.poll()
+			b.poll()
+			OS.delay_msec(5)
+		check(not got.is_empty() and int(got[0].n) == 7, "%s rendezvous delivers a message (%d of %d services up, %d ms)" % [kind, b.connected_count(), 3 if kind == "mqtt" else 1, Time.get_ticks_msec() - t0])
+		a.stop()
+		b.stop()

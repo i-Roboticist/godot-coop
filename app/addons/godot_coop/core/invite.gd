@@ -7,21 +7,23 @@ extends RefCounted
 ##
 ## Binary layout (v1): u8 version | 6 bytes invite id | 16 bytes secret | u8 role |
 ##   u8 n | n × (u8 kind, str ip, u16 port) | str relay host | u16 relay port | str room | str project
+##   [| u8 flags]   (added in 1.1.2; older versions stop reading before it)
 
 const Util := preload("res://addons/godot_coop/core/util.gd")
 
 const PREFIX := "gdc1."
 const KIND_LAN := 1
 const KIND_PUBLIC := 2
+const FLAG_INTERNET := 1      # the host answers on the rendezvous services (see rendezvous.gd)
 const ROLE_EDITOR := 0
 const ROLE_VIEWER := 1
 const SHORT_ALPHABET := "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
 
-static func make(secret: PackedByteArray, iid: PackedByteArray, role: String, candidates: Array, relay_host: String, relay_port: int, room: String, project: String) -> Dictionary:
+static func make(secret: PackedByteArray, iid: PackedByteArray, role: String, candidates: Array, relay_host: String, relay_port: int, room: String, project: String, flags := 0) -> Dictionary:
 	return {
 		"iid": iid, "secret": secret, "role": role, "cands": candidates,
-		"relay_host": relay_host, "relay_port": relay_port, "room": room, "project": project,
+		"relay_host": relay_host, "relay_port": relay_port, "room": room, "project": project, "flags": flags,
 	}
 
 
@@ -60,6 +62,7 @@ static func encode(info: Dictionary) -> String:
 	buf.put_u16(int(info.get("relay_port", 0)))
 	_put_str(buf, String(info.get("room", "")))
 	_put_str(buf, String(info.get("project", "")).substr(0, 40))
+	buf.put_u8(int(info.get("flags", 0)))
 	return PREFIX + Util.b64url_encode(buf.data_array)
 
 
@@ -93,9 +96,10 @@ static func decode(text: String) -> Dictionary:
 	var relay_port := buf.get_u16()
 	var room := _get_str(buf)
 	var project := _get_str(buf)
+	var flags := buf.get_u8() if buf.get_position() < raw.size() else 0
 	if iid.size() != 6 or secret.size() != 16:
 		return {}
-	return make(secret, iid, role, cands, relay_host, relay_port, room, project)
+	return make(secret, iid, role, cands, relay_host, relay_port, room, project, flags)
 
 
 static func extract_code(text: String) -> String:

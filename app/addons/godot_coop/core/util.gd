@@ -254,6 +254,16 @@ static func _is_private_v4(a: String) -> bool:
 	return false
 
 
+## Addresses that can't be reached from the internet (LAN, carrier-grade NAT, loopback, link-local).
+static func is_private_ipv4(a: String) -> bool:
+	if _is_private_v4(a) or a.begins_with("127.") or a.begins_with("169.254.") or a.begins_with("0."):
+		return true
+	if a.begins_with("100."):
+		var second := int(a.get_slice(".", 1))
+		return second >= 64 and second <= 127
+	return false
+
+
 ## Local IPv4 addresses that a teammate might be able to reach (LAN first, then VPN-ish ones).
 static func reachable_ipv4s(max_count := 4) -> PackedStringArray:
 	var lan := PackedStringArray()

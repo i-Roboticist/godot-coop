@@ -1,0 +1,59 @@
+# Tests joining between two different networks: this runner (in a cloud data center) hosts or
+# joins, and you run the other side at home with app/tests/inet_probe.gd. The invite is swapped
+# through ntfy.sh/<topic>; use a random topic name.
+name: Internet test
+
+on:
+  workflow_dispatch:
+    inputs:
+      role:
+        description: "What this runner does: host or join"
+        default: host
+        type: choice
+        options: [host, join]
+      topic:
+        description: "ntfy topic to swap the invite through (pick something random)"
+        required: true
+      os:
+        description: "Runner"
+        default: ubuntu-latest
+        type: choice
+        options: [ubuntu-latest, windows-latest, macos-latest]
+      seconds:
+        description: "How long the host waits for someone to join"
+        default: "600"
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7.2"
+
+jobs:
+  probe:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Download Godot
+        shell: bash
+        run: |
+          tag="$GODOT_VERSION-stable"
+          base="https://github.com/godotengine/godot-builds/releases/download/$tag"
+          case "$RUNNER_OS" in
+            Linux)   file="Godot_v${tag}_linux.x86_64.zip";  exe="Godot_v${tag}_linux.x86_64" ;;
+            Windows) file="Godot_v${tag}_win64.exe.zip";      exe="Godot_v${tag}_win64_console.exe" ;;
+            macOS)   file="Godot_v${tag}_macos.universal.zip"; exe="Godot.app/Contents/MacOS/Godot" ;;
+          esac
+          curl -sSL -o godot.zip "$base/$file"
+          unzip -q godot.zip -d "$RUNNER_TEMP/godot"
+          echo "GODOT=$RUNNER_TEMP/godot/$exe" >> "$GITHUB_ENV"
+
+      - name: Import the app project
+        shell: bash
+        run: '"$GODOT" --headless --editor --quit --path app || true'
+
+      - name: Run the probe
+        shell: bash
+        run: '"$GODOT" --headless --path app -s res://tests/inet_probe.gd -- ${{ inputs.role }} --topic "${{ inputs.topic }}" --seconds "${{ inputs.seconds }}"'

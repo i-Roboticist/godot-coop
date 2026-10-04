@@ -15,6 +15,8 @@ const Invite := preload("res://addons/godot_coop/core/invite.gd")
 const FileSync := preload("res://addons/godot_coop/core/file_sync.gd")
 const HostDocs := preload("res://addons/godot_coop/core/host_docs.gd")
 const Git := preload("res://addons/godot_coop/core/git.gd")
+const Rendezvous := preload("res://addons/godot_coop/core/rendezvous.gd")
+const P2P := preload("res://addons/godot_coop/core/p2p.gd")
 
 signal state_changed(state: String, detail: String)
 signal message(msg: Dictionary)
@@ -34,6 +36,9 @@ const CH_FAST := Net.CH_FAST
 const CH_TUNNEL := Net.CH_TUNNEL
 
 const CONNECT_TIMEOUT_MS := 15000
+const INTERNET_TIMEOUT_MS := 30000
+const MAX_SLOTS := 12
+const VPN_TIP := "Try a free VPN that puts you on one network, like Tailscale or Radmin VPN, then use a new invite."
 const RELAY_GRACE_MS := 1500
 const TOKEN_TTL_S := 900.0
 const MAX_CHAT := 200
@@ -46,7 +51,7 @@ var profile := {}
 var settings := {
 	"port": Util.DEFAULT_PORT, "use_upnp": true, "relay_host": "", "relay_port": Util.DEFAULT_RELAY_PORT,
 	"auto_accept_viewers": false, "auto_accept_all": false, "include_loopback": false,
-	"game_port": 7777, "web_link_base": "",
+	"game_port": 7777, "web_link_base": "", "internet": true,
 }
 var state := "idle"
 var state_detail := ""
@@ -61,7 +66,10 @@ var activity_log: Array = []
 var net: Net = null
 var files: FileSync = null
 var docs: HostDocs = null
-var connection_kind := ""            # "direct" / "relay" (joined side)
+var connection_kind := ""            # "direct" / "internet" / "relay" (joined side)
+var rdv: Rendezvous = null           # finds teammates on other networks (see rendezvous.gd)
+var public_ip := ""
+var nat_type := ""
 var version_override := {}           # tests only: pretend to be another Godot version
 
 # host state
@@ -86,6 +94,8 @@ var _local_queue: Array = []
 var _chat_hist: Array = []
 var _act_hist: Array = []
 var _act_seq := 0
+var _probe: P2P = null               # host: learns our public address for the dock
+var _rdv_sids := {}                  # host: internet connection id -> {"chan", "t"}
 
 # joined state
 var _invite := {}
@@ -99,6 +109,12 @@ var _outbox: Array = []
 var _last_error := ""
 var _end_at := 0
 var _end_reason := ""
+var _rdv_sid := ""                   # joined: this attempt's internet connection id
+var _rdv_hello := {}
+var _rdv_next := 0
+var _rdv_sent := 0
+var _rdv_answered := false
+var _rdv_info := {}
 
 
 func _log(s: String) -> void:
@@ -108,6 +124,9 @@ func _log(s: String) -> void:
 func _set_state(s: String, detail := "") -> void:
 	state = s
 	state_detail = detail
+	if not is_host and rdv != null and (s == "connected" or s == "failed" or s == "ended"):
+		rdv.stop()
+		rdv = null
 	state_changed.emit(s, detail)
 
 
@@ -192,6 +211,14 @@ func host(p_project_dir: String, p_profile: Dictionary, p_settings := {}) -> Err
 		net.connect_relay(String(settings.relay_host), int(settings.relay_port))
 	else:
 		relay_status = "No relay configured"
+	if settings.internet:
+		rdv = Rendezvous.new()
+		rdv.received.connect(_on_rdv)
+		for k in _invites:
+			rdv.add_channel(k, _invites[k].secret)
+		_probe = P2P.new()
+		if not _probe.start(0, false):
+			_probe = null
 	_set_state("hosting", "")
 	_log("Hosting %s on UDP %d" % [host_info.project, net.local_port])
 	return OK
@@ -223,6 +250,9 @@ func regenerate_invites() -> void:
 		_invites[k].revoked = true
 	_create_invite("editor")
 	_create_invite("viewer")
+	if rdv != null:
+		for k in _invites:
+			rdv.add_channel(k, _invites[k].secret)
 	_build_invites()
 
 
@@ -255,7 +285,7 @@ func _build_invites() -> void:
 		var inv: Dictionary = _invites[k]
 		if inv.revoked:
 			continue
-		inv.code = Invite.encode(Invite.make(inv.secret, inv.iid, inv.role, _candidates, rh, rp, _relay_room, String(host_info.get("project", ""))))
+		inv.code = Invite.encode(Invite.make(inv.secret, inv.iid, inv.role, _candidates, rh, rp, _relay_room, String(host_info.get("project", "")), Invite.FLAG_INTERNET if rdv != null else 0))
 		inv.short = ""
 		if not _relay_room.is_empty() and inv.role == "editor":
 			net.relay_send({"t": "short_set", "invite": inv.code})
@@ -277,7 +307,25 @@ func connection_summary() -> String:
 		parts.append(("LAN " if c[0] == Invite.KIND_LAN else "Internet ") + "%s:%d" % [c[1], c[2]])
 	if not _relay_room.is_empty():
 		parts.append("relay %s" % settings.relay_host)
+	if rdv != null:
+		parts.append("internet (automatic)")
 	return ", ".join(parts)
+
+
+## One line for the host's dock about joining from other networks.
+func internet_status() -> String:
+	if rdv == null:
+		return "Internet joining is off"
+	if _probe != null and not _probe.done:
+		return "Internet: checking…"
+	if nat_type == "blocked":
+		return "Internet: this network seems to block it (UDP), so only people on your network or VPN can join"
+	if rdv.connected_count() == 0 and rdv.age_ms() > 12000:
+		return "Internet: can't reach the matchmaking services right now (retrying)"
+	var t := "Internet: on" + (" (public IP %s)" % public_ip if not public_ip.is_empty() else "")
+	if nat_type == "strict":
+		t += ". Your router is strict, so some networks may not get through."
+	return t
 
 
 func _synced_peers() -> Array:
@@ -454,6 +502,12 @@ func _finish_end() -> void:
 	_end_at = 0
 	if files != null:
 		files.save_state(true)
+	if rdv != null:
+		rdv.stop()
+		rdv = null
+	if _probe != null:
+		_probe.cleanup(true)
+		_probe = null
 	if _upnp_thread != null:
 		_upnp_thread.wait_to_finish()
 		_upnp_thread = null
@@ -527,6 +581,47 @@ func _wire_net() -> void:
 	net.link_packet.connect(_on_link_packet)
 	net.relay_message.connect(_on_relay_message)
 	net.relay_state.connect(_on_relay_state)
+	net.p2p_ready.connect(_on_p2p_ready)
+
+
+# --- internet connections (both sides) ----------------------------------------------------------
+
+func _on_rdv(channel: String, m: Dictionary) -> void:
+	var sid := String(m.get("sid", ""))
+	if sid.length() < 8 or sid.length() > 32:
+		return
+	match String(m.get("t", "")):
+		"hello":
+			if not is_host or state != "hosting":
+				return
+			if not net.p2p_has(sid):
+				if net.p2p_count() >= MAX_SLOTS:
+					return
+				_log("Someone on another network is connecting")
+			_rdv_sids[sid] = {"chan": channel, "t": Util.now_ms()}
+			if not net.p2p_open(sid):
+				return
+			net.p2p_set_remote(sid, m.get("cands"), m.get("nat"), m.get("pub"))
+		"welcome":
+			if is_host or sid != _rdv_sid:
+				return
+			_rdv_answered = true
+			net.p2p_set_remote(sid, m.get("cands"), m.get("nat"), m.get("pub"))
+
+
+## Our side of an internet connection is ready (or gained an address): tell the other side.
+func _on_p2p_ready(sid: String, info: Dictionary) -> void:
+	if rdv == null:
+		return
+	if is_host:
+		if _rdv_sids.has(sid):
+			rdv.publish(_rdv_sids[sid].chan, {"t": "welcome", "sid": sid, "cands": info.cands, "nat": info.nat, "pub": info.pub})
+	elif sid == _rdv_sid:
+		_rdv_info = info
+		_rdv_hello = {"t": "hello", "sid": sid, "cands": info.cands, "nat": info.nat, "pub": info.pub}
+		rdv.publish("invite", _rdv_hello)
+		_rdv_sent += 1
+		_rdv_next = Util.now_ms() + 3000
 
 
 func _on_relay_state(s: String) -> void:
@@ -879,6 +974,19 @@ func _attempt() -> Error:
 		net.dial(String(c[1]), int(c[2]))
 	if not String(_invite.relay_host).is_empty() and not String(_invite.room).is_empty():
 		net.connect_relay(String(_invite.relay_host), int(_invite.relay_port))
+	_rdv_sid = ""
+	_rdv_hello = {}
+	_rdv_answered = false
+	_rdv_sent = 0
+	_rdv_info = {}
+	if int(_invite.get("flags", 0)) & Invite.FLAG_INTERNET and settings.internet:
+		if rdv == null:
+			rdv = Rendezvous.new()
+			rdv.received.connect(_on_rdv)
+			rdv.add_channel("invite", _invite.secret)
+		_rdv_sid = Util.random_hex(8)
+		net.p2p_upnp = null if settings.use_upnp else false
+		net.p2p_open(_rdv_sid)
 	_set_state("reconnecting" if _reconnect_tries > 0 else "connecting", "Reaching %s…" % _invite.get("project", "the host"))
 	return OK
 
@@ -911,7 +1019,7 @@ func _client_packet(conn: Dictionary, ch: int, data: PackedByteArray) -> void:
 		conn.box.setup(_invite.secret, conn.nonce_c, m.nonce, false)
 		conn.state = "secure"
 		_conn = conn
-		connection_kind = conn.link.kind
+		connection_kind = "internet" if conn.link.get("path", "") == "internet" else String(conn.link.kind)
 		# Commit to this path and stop the others.
 		for id in _conns.keys():
 			if id != conn.link.id:
@@ -1093,6 +1201,18 @@ func _poll_host() -> void:
 			upnp_status = "UPnP: " + String(r.get("why", "unavailable"))
 	if not invites_ready:
 		_maybe_build_invites()
+	if rdv != null:
+		rdv.poll()
+		for sid in _rdv_sids.keys():
+			if not net.p2p_has(sid) and Util.now_ms() - int(_rdv_sids[sid].t) > 5000:
+				_rdv_sids.erase(sid)
+	if _probe != null and _probe.done and public_ip.is_empty() and nat_type.is_empty():
+		public_ip = _probe.public_ip
+		nat_type = _probe.nat
+		_log("Internet check: public IP %s, router %s" % [public_ip if not public_ip.is_empty() else "unknown", nat_type])
+		_probe.cleanup()
+	elif _probe != null:
+		_probe.poll()
 	docs.prune()
 	if _relay_retry_ms > 0 and Util.now_ms() > _relay_retry_ms:
 		_relay_retry_ms = 0
@@ -1109,6 +1229,12 @@ func _poll_host() -> void:
 
 func _poll_client() -> void:
 	var now := Util.now_ms()
+	if rdv != null:
+		rdv.poll()
+		if _conn == null and not _rdv_answered and not _rdv_hello.is_empty() and now >= _rdv_next and _rdv_sent < 10:
+			rdv.publish("invite", _rdv_hello)
+			_rdv_sent += 1
+			_rdv_next = now + 3000
 	for id in _relay_hello_due.keys():
 		if now >= int(_relay_hello_due[id]) or not net.dials_pending():
 			_relay_hello_due.erase(id)
@@ -1119,10 +1245,31 @@ func _poll_client() -> void:
 			if now >= _reconnect_at:
 				_reconnect_at = 0
 				_attempt()
-		elif now - _attempt_ms > CONNECT_TIMEOUT_MS:
+		elif now - _attempt_ms > (INTERNET_TIMEOUT_MS if _rdv_answered else CONNECT_TIMEOUT_MS):
 			if _reconnect_tries > 0 and _reconnect_tries < 40:
 				_start_reconnect("Host unreachable")
 			else:
-				var why := _last_error if not _last_error.is_empty() else "Couldn't reach the host. Check the code, or ask the host to enable a relay / UPnP."
+				var why := unreachable_reason()
 				net.stop()
 				_set_state("failed", why)
+
+
+## Why a join attempt found no way through, and what to try.
+func unreachable_reason() -> String:
+	if not _last_error.is_empty():
+		return _last_error
+	if _rdv_sid.is_empty():
+		var lan_only := String(_invite.get("relay_host", "")).is_empty()
+		for c in _invite.get("cands", []):
+			if not Util.is_private_ipv4(String(c[1])):
+				lan_only = false
+		if lan_only:
+			return "Couldn't reach the host. This invite only works on the host's own network: they need Godot Co-op 1.1.2 or newer for joining over the internet. " + VPN_TIP
+		return "Couldn't reach the host. Check the code, or ask the host to enable a relay / UPnP."
+	if rdv != null and rdv.connected_count() == 0:
+		return "Couldn't reach the matchmaking services, so this network may be blocking them. " + VPN_TIP
+	if not _rdv_answered:
+		return "The host didn't answer. Check they're still hosting and that you both have Godot Co-op 1.1.2 or newer."
+	if String(_rdv_info.get("nat", "")) == "blocked":
+		return "Found the host, but your network seems to block direct connections (UDP). " + VPN_TIP
+	return "Found the host, but your two routers wouldn't let a direct connection through. " + VPN_TIP

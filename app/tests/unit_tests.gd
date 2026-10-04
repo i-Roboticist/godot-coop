@@ -12,6 +12,8 @@ const FileSync := preload("res://addons/godot_coop/core/file_sync.gd")
 const SceneDoc := preload("res://addons/godot_coop/core/scene_doc.gd")
 const Wire := preload("res://addons/godot_coop/core/wire.gd")
 const Security := preload("res://addons/godot_coop/core/security.gd")
+const Stun := preload("res://addons/godot_coop/core/stun.gd")
+const Rendezvous := preload("res://addons/godot_coop/core/rendezvous.gd")
 
 var failures := 0
 var checks := 0
@@ -38,6 +40,7 @@ func _init() -> void:
 	test_scene_doc()
 	test_wire()
 	test_security()
+	test_internet()
 	print("unit tests: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures > 0 else 0)
 
@@ -449,3 +452,60 @@ func test_security() -> void:
 	late.close()
 	check(not Security.risk_reason("late.gd", dir.path_join("late.gd")).is_empty(), "security flags @tool after a long comment")
 	check(not Security.risk_reason("Player.cs", dir.path_join("n.gd")).is_empty() and not Security.risk_reason("Game.csproj", dir.path_join("n.gd")).is_empty(), "security flags C# code and build files")
+
+
+func test_internet() -> void:
+	# STUN: a request, and the answer a server sends back for 203.0.113.9:47500.
+	var req := Stun.request()
+	var tid: PackedByteArray = req[0]
+	var pkt: PackedByteArray = req[1]
+	check(pkt.size() == 20 and pkt[1] == 1 and pkt.slice(4, 8) == PackedByteArray(Stun.MAGIC) and pkt.slice(8) == tid, "stun request layout")
+	var resp := PackedByteArray([0x01, 0x01, 0x00, 0x0C])
+	resp.append_array(PackedByteArray(Stun.MAGIC))
+	resp.append_array(tid)
+	var port := 47500 ^ 0x2112
+	resp.append_array(PackedByteArray([0x00, 0x20, 0x00, 0x08, 0x00, 0x01, port >> 8, port & 0xFF,
+		203 ^ 0x21, 0 ^ 0x12, 113 ^ 0xA4, 9 ^ 0x42]))
+	var got := Stun.parse(resp, tid)
+	check(got == ["203.0.113.9", 47500], "stun parses the mapped address (%s)" % [got])
+	check(Stun.parse(resp, Util.random_bytes(12)).is_empty(), "stun ignores other transactions")
+	check(Stun.parse(resp.slice(0, 26), tid).is_empty(), "stun ignores truncated answers")
+
+	# Rendezvous messages: only someone with the invite can read or make them.
+	var secret := Util.random_bytes(16)
+	var keys := Rendezvous.derive(secret)
+	check(keys.topic == Rendezvous.derive(secret).topic and keys.topic != Rendezvous.derive(Util.random_bytes(16)).topic, "rendezvous topic comes from the invite")
+	var ok_chars := true
+	for c in String(keys.topic):
+		ok_chars = ok_chars and ("abcdefghijklmnopqrstuvwxyz0123456789-".find(c) != -1)
+	check(ok_chars and String(keys.topic).length() <= 64, "rendezvous topic is a valid ntfy/MQTT name")
+	var text := Rendezvous.seal(keys, {"t": "hello", "cands": [["198.51.100.4", 50000]]})
+	var back = Rendezvous.open(keys, text)
+	check(back is Dictionary and back.t == "hello" and back.cands[0][1] == 50000, "rendezvous message roundtrip")
+	check(Rendezvous.open(Rendezvous.derive(Util.random_bytes(16)), text) == null, "rendezvous message needs the invite's key")
+	var raw := Util.b64url_decode(text)
+	raw[20] ^= 1
+	check(Rendezvous.open(keys, Util.b64url_encode(raw)) == null, "tampered rendezvous message rejected")
+	check(Rendezvous.open(keys, "garbage") == null and Rendezvous.open(keys, "") == null, "garbage rendezvous message rejected")
+
+	# MQTT framing (remaining length is a varint).
+	var body := PackedByteArray()
+	body.resize(200)
+	var framed := Rendezvous.Mqtt.packet(0x30, body)
+	check(framed.size() == 203 and framed[1] == 0xC8 and framed[2] == 0x01, "mqtt remaining length over 127")
+	check(Rendezvous.Mqtt.split(framed) == [203, 0x30, body], "mqtt split full packet")
+	check(Rendezvous.Mqtt.split(framed.slice(0, 100)).is_empty(), "mqtt split waits for the rest")
+	check(Rendezvous.Mqtt.split(PackedByteArray([0x30, 0xFF, 0xFF, 0xFF, 0xFF, 0x01])) == [-1], "mqtt split rejects garbage")
+
+	# Invites carry an "answers over the internet" flag, and older invites (without it) still load.
+	var info := Invite.make(secret, Util.random_bytes(6), "editor", [[Invite.KIND_LAN, "10.0.0.2", 47500]], "", 0, "", "Game", Invite.FLAG_INTERNET)
+	var code := Invite.encode(info)
+	check(int(Invite.decode(code).flags) == Invite.FLAG_INTERNET, "invite keeps the internet flag")
+	var old_raw := Util.b64url_decode(code.substr(Invite.PREFIX.length()))
+	var old := Invite.decode(Invite.PREFIX + Util.b64url_encode(old_raw.slice(0, old_raw.size() - 1)))
+	check(not old.is_empty() and int(old.flags) == 0 and old.project == "Game" and old.cands.size() == 1, "invites from 1.1.1 still decode")
+
+	for a in ["10.1.2.3", "192.168.86.33", "172.20.0.1", "100.64.0.1", "127.0.0.1", "169.254.9.9"]:
+		check(Util.is_private_ipv4(a), "private address " + a)
+	for a in ["75.33.177.91", "100.128.0.1", "172.32.0.1", "8.8.8.8"]:
+		check(not Util.is_private_ipv4(a), "public address " + a)

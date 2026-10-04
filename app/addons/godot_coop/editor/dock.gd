@@ -475,7 +475,7 @@ func _refresh_hosting(s) -> void:
 		_short_label.text = "Short code: " + Invite.pretty_short_code(short)
 		_short_label.set_meta("code", Invite.pretty_short_code(short))
 	_weblink_copy.visible = not String(plugin.prefs.web_link_base).is_empty()
-	_conn_info.text = "Reachable via: %s\n%s\n%s" % [s.connection_summary(), s.upnp_status, s.relay_status]
+	_conn_info.text = "Reachable via: %s\n%s\n%s\n%s" % [s.connection_summary(), s.internet_status(), s.upnp_status, s.relay_status]
 	_auto_viewers.set_pressed_no_signal(bool(s.settings.auto_accept_viewers))
 	_trust_host_cb.set_pressed_no_signal(plugin.trust_host)
 

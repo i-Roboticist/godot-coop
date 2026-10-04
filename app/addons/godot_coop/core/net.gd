@@ -9,15 +9,21 @@ extends RefCounted
 ##         socket), one "punch" socket that probes the relay and then dials the host's public
 ##         address once the relay has introduced both sides, and one socket to the relay itself,
 ##         which can forward everything if no direct path works.
+## Internet (no relay needed): host and joiner each prepare a fresh socket per connection (a
+##         "slot"), learn its public address from STUN (and UPnP), swap addresses through the
+##         rendezvous services, then both keep dialing each other's addresses. Each side's
+##         outgoing packets open its own router for the other's, so one direction gets through.
 ## Upper layers only see "links" and never care which path a link takes.
 
 const Util := preload("res://addons/godot_coop/core/util.gd")
+const P2P := preload("res://addons/godot_coop/core/p2p.gd")
 
 signal link_up(link: Dictionary)
 signal link_down(link: Dictionary)
 signal link_packet(link: Dictionary, channel: int, data: PackedByteArray)
 signal relay_message(msg: Dictionary)
 signal relay_state(state: String)
+signal p2p_ready(sid: String, info: Dictionary)
 
 const CH_CTRL := 0
 const CH_LIVE := 1
@@ -30,6 +36,10 @@ const RELAY_CTRL := 0x00
 const RELAY_DATA := 0x01
 const MAX_PACKET := 4 * 1024 * 1024
 const PROBE_MAGIC := "GCP1"
+const SLOT_WAIT_MS := 45000
+const SLOT_DIAL_MS := 30000
+const DIAL_DWELL_MS := 1200
+const PUNCH := [0xFF, 0x47, 0x43]
 
 var is_host := false
 var local_port := 0
@@ -56,6 +66,9 @@ var _peer_link := {}                 # ENetPacketPeer instance id -> link id
 var _link_seq := 0
 var _gen := 0                        # bumped by stop(); event loops bail out when it changes
 var _dead: Array = []                # [socket, destroy_at_ms]: retired sockets get a moment to say goodbye
+var _slots := {}                     # internet connection id -> slot (see p2p_open)
+var _gone_gathers: Array = []        # closed slots still removing their router port mapping
+var p2p_upnp = false                 # for new slots: a known UPNP router, null to look for one, false for none
 
 
 func start_host(port: int) -> Error:
@@ -113,6 +126,12 @@ func stop() -> void:
 	relay_enet = null
 	punch_enet = null
 	_dials.clear()
+	for sid in _slots:
+		_gone_gathers.append(_slots[sid].gather)
+	_slots.clear()
+	for g in _gone_gathers:
+		g.cleanup(true)
+	_gone_gathers.clear()
 
 
 func _all_enets() -> Array:
@@ -125,6 +144,9 @@ func _all_enets() -> Array:
 		out.append(punch_enet)
 	for d in _dials:
 		out.append(d.enet)
+	for sid in _slots:
+		if _slots[sid].enet != null:
+			out.append(_slots[sid].enet)
 	return out
 
 
@@ -168,6 +190,9 @@ func dials_pending() -> bool:
 	for d in _dials:
 		if d.peer != null and d.peer.get_state() != ENetPacketPeer.STATE_CONNECTED:
 			return true
+	for sid in _slots:
+		if _slots[sid].linked == 0:
+			return true
 	return _punch_dialing
 
 
@@ -181,6 +206,16 @@ func commit(link: Dictionary) -> void:
 	if punch_enet != null and punch_enet != keep:
 		_retire(punch_enet)
 		punch_enet = null
+	for sid in _slots.keys():
+		var slot: Dictionary = _slots[sid]
+		if slot.enet == null or slot.enet != keep:
+			_close_slot(sid)
+			continue
+		slot.committed = link.peer
+		for p in slot.enet.get_peers():
+			if p != link.peer and p.is_active():
+				p.peer_disconnect_now()
+		slot.attempt = null
 	_punch_dialing = false
 	_probe_until = 0
 	if link.kind == "direct" and relay_enet != null:
@@ -285,6 +320,166 @@ func punch(ip: String, port: int) -> void:
 		_punches.append([now + d, ip, port])
 
 
+# --- internet connections ----------------------------------------------------------------------------
+
+## Prepares a slot: a socket for one internet connection (on the host, one per joiner). Emits
+## p2p_ready with our addresses once they're known, and again whenever one is added.
+func p2p_open(sid: String) -> bool:
+	if _slots.has(sid):
+		var s: Dictionary = _slots[sid]
+		if s.enet != null:
+			p2p_ready.emit(sid, s.gather.info())
+		return true
+	var g := P2P.new()
+	if not g.start(0, p2p_upnp):
+		return false
+	var now := Util.now_ms()
+	_slots[sid] = {
+		"sid": sid, "gather": g, "enet": null, "remote": [], "remote_nat": "", "remote_pub": [],
+		"attempt": null, "dial_i": 0, "next_punch": 0, "punch_round": 0, "until": now + SLOT_WAIT_MS,
+		"dial_until": 0, "linked": 0, "link_peers": {}, "had_link": false, "committed": null,
+	}
+	return true
+
+
+## The other side's addresses (its p2p_ready info, delivered through the rendezvous).
+func p2p_set_remote(sid: String, cands, nat, pub) -> void:
+	if not _slots.has(sid) or not (cands is Array):
+		return
+	var s: Dictionary = _slots[sid]
+	# Public IPv4 first (most likely to work from another network), then IPv6, then LAN ones.
+	var tiers := [[], [], []]
+	for c in cands:
+		if c is Array and c.size() == 2 and int(c[1]) > 0 and int(c[1]) < 65536:
+			var ip := Util.normalize_ip(String(c[0]))
+			if Util.is_ipv4(ip) and not ip.begins_with("127."):
+				tiers[2 if Util.is_private_ipv4(ip) else 0].append([ip, int(c[1])])
+			elif ip.find(":") != -1 and ip != "::1":
+				tiers[1].append([ip, int(c[1])])
+	s.remote = (tiers[0] + tiers[1] + tiers[2]).slice(0, 12)
+	s.dial_i = 0
+	s.remote_nat = String(nat) if nat is String else ""
+	s.remote_pub = pub if pub is Array and pub.size() == 2 and pub[1] is Array else []
+	var now := Util.now_ms()
+	s.dial_until = now + SLOT_DIAL_MS
+	s.until = maxi(int(s.until), now + SLOT_DIAL_MS + 5000)
+	s.punch_round = 0
+	s.next_punch = 0
+
+
+func p2p_count() -> int:
+	return _slots.size()
+
+
+func p2p_has(sid: String) -> bool:
+	return _slots.has(sid)
+
+
+func p2p_info(sid: String) -> Dictionary:
+	return _slots[sid].gather.info() if _slots.has(sid) else {}
+
+
+func _close_slot(sid: String) -> void:
+	if not _slots.has(sid):
+		return
+	var s: Dictionary = _slots[sid]
+	_slots.erase(sid)
+	if s.enet != null:
+		for p in s.enet.get_peers():
+			var iid: int = p.get_instance_id()
+			if _peer_link.has(iid):
+				var id: String = _peer_link[iid]
+				_peer_link.erase(iid)
+				if links.has(id):
+					var l: Dictionary = links[id]
+					links.erase(id)
+					link_down.emit(l)
+		_retire(s.enet)
+	s.gather.release()
+	_gone_gathers.append(s.gather)
+
+
+func _slot_of(e: ENetConnection):
+	for sid in _slots:
+		if _slots[sid].enet == e:
+			return _slots[sid]
+	return null
+
+
+func _poll_slots(now: int) -> void:
+	for sid in _slots.keys():
+		if not _slots.has(sid):
+			continue
+		var s: Dictionary = _slots[sid]
+		var g = s.gather
+		g.poll()
+		if s.enet == null:
+			if not g.done:
+				continue
+			g.release()
+			var e := ENetConnection.new()
+			if e.create_host_bound("*", g.port, 32, CHANNELS) != OK:
+				_close_slot(sid)
+				continue
+			s.enet = e
+			g.changed = false
+			p2p_ready.emit(sid, g.info())
+			continue
+		if g.changed:
+			g.changed = false
+			p2p_ready.emit(sid, g.info())
+		if not _slots.has(sid):
+			continue
+		if s.linked == 0 and (now > int(s.until) or s.had_link):
+			_close_slot(sid)
+			continue
+		if s.linked == 0 and not s.remote.is_empty() and now < int(s.dial_until):
+			_drive_slot(s, now)
+	if not _gone_gathers.is_empty():
+		for g in _gone_gathers:
+			g.cleanup()
+		_gone_gathers = _gone_gathers.filter(func(g): return g.busy())
+
+
+## Keeps both routers open toward each other and keeps offering a handshake on every address.
+func _drive_slot(s: Dictionary, now: int) -> void:
+	var e: ENetConnection = s.enet
+	if now >= int(s.next_punch):
+		for c in s.remote:
+			e.socket_send(c[0], c[1], PackedByteArray(PUNCH))
+		# A "strict" router picks a new public port for every destination, so the one it will use
+		# toward us is unknown. Such routers usually count upward: open ours for the next few.
+		if s.remote_nat == "strict" and s.punch_round < 6 and not s.remote_pub.is_empty():
+			var top := 0
+			for p in s.remote_pub[1]:
+				top = maxi(top, int(p))
+			if top > 0 and Util.is_ipv4(String(s.remote_pub[0])):
+				for k in range(1, 49):
+					if top + k < 65536:
+						e.socket_send(String(s.remote_pub[0]), top + k, PackedByteArray(PUNCH))
+		s.punch_round += 1
+		s.next_punch = now + (150 if s.punch_round < 10 else 1000)
+	# Godot's ENet only dials out from a socket that has no other peers, so the addresses are
+	# tried one at a time, round and round. Connections from the other side are accepted anytime.
+	var a = s.attempt
+	if a != null and a.peer.is_active():
+		if a.peer.get_state() != ENetPacketPeer.STATE_CONNECTING or now - int(a.t) < DIAL_DWELL_MS:
+			return
+		a.peer.reset()
+		s.attempt = null
+		return      # the socket drops it on its next service, then the next address gets a turn
+	s.attempt = null
+	for p in e.get_peers():
+		if p.is_active():
+			return  # the other side is connecting to us
+	var c: Array = s.remote[int(s.dial_i) % s.remote.size()]
+	s.dial_i += 1
+	var peer := e.connect_to_host(c[0], c[1], CHANNELS)
+	if peer != null:
+		peer.set_timeout(32, 3000, 6000)
+		s.attempt = {"peer": peer, "t": now}
+
+
 # --- sending ---------------------------------------------------------------------------------------
 
 func send(link: Dictionary, channel: int, data: PackedByteArray, reliable := true) -> void:
@@ -352,6 +547,7 @@ func poll() -> void:
 		elif not is_host and punch_enet != null and now < _probe_until and not _punch_dialing:
 			punch_enet.socket_send(relay_ip, relay_port + 1, _probe_packet(2, _probe_token))
 			_next_probe = now + 250
+	_poll_slots(now)
 	var gen := _gen
 	if server != null:
 		_service(server, "server")
@@ -363,6 +559,11 @@ func poll() -> void:
 		if gen != _gen:
 			return
 		_service(d.enet, "dial")
+	for sid in _slots.keys():
+		if gen != _gen:
+			return
+		if _slots.has(sid) and _slots[sid].enet != null:
+			_service(_slots[sid].enet, "p2p")
 	if gen != _gen:
 		return
 	if not _dead.is_empty():
@@ -411,12 +612,29 @@ func _on_connect(e: ENetConnection, peer: ENetPacketPeer, role: String) -> void:
 			_next_probe = 0
 			relay_state.emit("connected")
 		return
+	var path := "lan"
 	if role == "punch":
 		_punch_dialing = false
+		path = "internet"
+	elif role == "p2p":
+		var s = _slot_of(e)
+		if s == null or (s.committed != null and s.committed != peer):
+			peer.peer_disconnect_now()
+			return
+		s.link_peers[peer.get_instance_id()] = true
+		s.linked = s.link_peers.size()
+		s.had_link = true
+		if s.attempt != null:
+			var a: ENetPacketPeer = s.attempt.peer
+			if a != peer and a.is_active() and a.get_state() != ENetPacketPeer.STATE_CONNECTED:
+				a.reset()
+			s.attempt = null
+		path = "internet"
 	_tune(peer)
 	var link := _new_link("direct", _remote_of(peer))
 	link.peer = peer
 	link.enet = e
+	link["path"] = path
 	_peer_link[peer.get_instance_id()] = link.id
 	link_up.emit(link)
 
@@ -438,6 +656,11 @@ func _on_disconnect(peer: ENetPacketPeer, role: String) -> void:
 	if role == "punch":
 		_punch_dialing = false
 	var iid := peer.get_instance_id()
+	if role == "p2p":
+		for sid in _slots:
+			var lp: Dictionary = _slots[sid].link_peers
+			if lp.erase(iid):
+				_slots[sid].linked = lp.size()
 	if _peer_link.has(iid):
 		var id: String = _peer_link[iid]
 		_peer_link.erase(iid)
