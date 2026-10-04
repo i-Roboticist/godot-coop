@@ -116,9 +116,9 @@ Peer to peer and end-to-end encrypted. The host approves everyone, and files tha
 - The host approves every new person and picks their role. People already admitted reconnect automatically.
 - Connection paths, tried together:
   - LAN and VPN addresses (Tailscale, ZeroTier…),
-  - your public address with the router port opened automatically (UPnP),
-  - **UDP hole punching** coordinated by the relay,
-  - and finally the **relay**, which forwards traffic.
+  - **over the internet with no setup:** the two apps find each other through free public message services (three MQTT brokers and ntfy.sh, all at once), learn their public addresses from STUN servers (Google, Cloudflare, Twilio) and punch a direct connection through both routers. The same trick Tailscale uses, without accounts,
+  - your public address with the router port opened automatically (UPnP), on either side,
+  - and the optional **relay**, which forwards traffic when both routers are too strict to punch through.
 - **End-to-end encryption.** Keys come from a secret in the invite (AES-256-CBC + HMAC-SHA256, replay-protected). A relay can't read or forge traffic.
 - **Same Godot version enforced.** A different version is turned away with a message saying which one is needed; the app downloads it.
 </details>
@@ -183,7 +183,9 @@ Peer to peer and end-to-end encrypted. The host approves everyone, and files tha
 <details>
 <summary><b>Do I need a server?</b></summary>
 
-No. The host's PC is the server. On the same network, or with a VPN like Tailscale, it just works. Over the internet the app opens a port on your router automatically (UPnP) when it can. If your network blocks that, run the optional [relay](#relay-server-optional) on any machine with a public UDP port (a cheap VPS is plenty).
+No. The host's PC is the server. On the same network it just works, and over the internet the apps connect directly too: they meet through free public message services, then punch a connection through both routers (no port forwarding, no accounts). Everything they exchange there is encrypted with the invite's secret.
+
+That works for most home and office networks. If both of you are behind very strict networks (some campus, hotel or mobile networks), the join fails with a message saying so. Then either use a free VPN that puts you on one network, like [Tailscale](https://tailscale.com) or [Radmin VPN](https://www.radmin-vpn.com) (host again or click **New codes** after connecting so the invite includes the VPN address), or run the optional [relay](#relay-server-optional) on any machine with a public UDP port.
 </details>
 
 <details>
@@ -244,7 +246,8 @@ Host `web/join/index.html` anywhere static, e.g. GitHub Pages, and paste its URL
 - **A property a `@tool` script or an animation preview keeps changing** is only sent once it settles, so teammates see the end result rather than every frame.
 - **If the host leaves, the session ends.** There's no host migration. Unsaved edits stay in each person's editor, so save before ending.
 - **3D follow** moves your editor camera directly until you navigate yourself.
-- **Testing so far:** the automated suites below, plus real sessions between two PCs on a LAN. Hole punching and UPnP across real-world routers haven't been widely tested yet, so reports are very welcome.
+- **Testing so far:** the automated suites below, real sessions between two PCs on a LAN, and joins in both directions between a home network and a cloud data center (`.github/workflows/internet-test.yml` with `app/tests/inet_probe.gd`). Routers vary a lot, so reports from other networks are very welcome.
+- **Joining over the internet needs a few public services.** The message services and STUN servers only help the two apps find each other; your project never goes through them. If they're all unreachable, LAN, VPN, UPnP and a relay still work.
 
 ---
 
@@ -298,6 +301,8 @@ flowchart LR
     CA["Godot Co-op app"] -->|"downloads project,<br/>Godot and plugin"| CE["Godot editor + plugin"]
   end
   HE <-->|"encrypted: direct, hole-punched or relayed"| CE
+  M[("Public message services<br/>(meeting point only)")] -.- HE
+  M -.- CE
   R[("Relay<br/>(optional)")] -.- HE
   R -.- CE
 ```
@@ -323,7 +328,7 @@ Windows releases are built from this repository by [GitHub Actions](.github/work
 - Committers and reviewers: [i-Roboticist](https://github.com/i-Roboticist)
 - Approvers: [i-Roboticist](https://github.com/i-Roboticist)
 
-**Privacy:** Godot Co-op only connects to other computers when you ask it to: when you host or join a session (your teammates' PCs, plus a relay if you set one), download a Godot version (from GitHub), or clone a Git repository. It has no telemetry, analytics or update checks.
+**Privacy:** Godot Co-op only connects to other computers when you ask it to: when you host or join a session (your teammates' PCs, a relay if you set one, and, so people on other networks can find each other, public STUN servers and message services: broker.hivemq.com, broker.emqx.io, test.mosquitto.org and ntfy.sh), download a Godot version (from GitHub), or clone a Git repository. What goes through the message services is a few small messages with network addresses, encrypted with the invite's secret. It has no telemetry, analytics or update checks.
 
 ## 🤝 Contributing
 

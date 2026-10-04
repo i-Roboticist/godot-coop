@@ -104,12 +104,12 @@ func run_host() -> bool:
 	var joined := false
 	var left := false
 	session.roster_changed.connect(func():
+		var online := 0
 		for pid in session.roster:
-			var r: Dictionary = session.roster[pid]
-			if int(pid) != 1 and r.online:
-				joined = true
-			if int(pid) != 1 and joined and not r.online:
-				left = true)
+			if int(pid) != 1 and session.roster[pid].online:
+				online += 1
+		joined = joined or online > 0
+		left = joined and online == 0)
 	var seconds := int(args.get("seconds", "600"))
 	pump(seconds * 1000, func(): return left)
 	say("joiner connected: %s, left: %s" % [joined, left])

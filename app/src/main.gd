@@ -16,7 +16,7 @@ const AppTheme := preload("res://src/app_theme.gd")
 const Installer := preload("res://src/installer.gd")
 const Installs := preload("res://src/godot_installs.gd")
 
-const APP_VERSION := "1.1.1"
+const APP_VERSION := "1.1.2"
 const LABEL_COLUMN := 230
 
 var installs: Node = null

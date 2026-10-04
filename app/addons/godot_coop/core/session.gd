@@ -1232,7 +1232,7 @@ func _poll_client() -> void:
 	if rdv != null:
 		rdv.poll()
 		if _conn == null and not _rdv_answered and not _rdv_hello.is_empty() and now >= _rdv_next and _rdv_sent < 10:
-			rdv.publish("invite", _rdv_hello)
+			rdv.publish("invite", _rdv_hello, false)
 			_rdv_sent += 1
 			_rdv_next = now + 3000
 	for id in _relay_hello_due.keys():

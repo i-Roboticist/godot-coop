@@ -100,7 +100,9 @@ func add_channel(channel: String, secret: PackedByteArray) -> void:
 	_sub.set_topics(_topic_chan.keys())
 
 
-func publish(channel: String, msg: Dictionary) -> void:
+## `ntfy` false skips ntfy.sh (it limits how many messages one address may post per day), for
+## repeats that the MQTT brokers can carry.
+func publish(channel: String, msg: Dictionary, ntfy := true) -> void:
 	if not _chans.has(channel):
 		return
 	var now := Util.now_ms()
@@ -117,7 +119,7 @@ func publish(channel: String, msg: Dictionary) -> void:
 				_mqtt[i].publish(topic, text.to_ascii_buffer(), now)
 				q.done[i] = true
 		_queue.append(q)
-	if use_ntfy:
+	if use_ntfy and (ntfy or q.done.is_empty()):
 		_pubs.append(NtfyPub.new(NTFY_HOST, topic, text))
 
 
