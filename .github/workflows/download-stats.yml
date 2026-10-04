@@ -1,0 +1,40 @@
+# GitHub only shows running download totals, so this records them every hour. The history is
+# appended to stats/downloads.csv on the "stats" branch (kept off main so it doesn't clutter it).
+# Read it with: python tools/downloads.py --history
+name: Download stats
+
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Append the current counts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --heads origin stats > /dev/null; then
+            git fetch -q origin stats
+            git switch stats
+          else
+            git switch --orphan stats
+          fi
+          mkdir -p stats
+          [ -f stats/downloads.csv ] || echo "time,tag,asset,downloads" > stats/downloads.csv
+          now=$(date -u +%Y-%m-%dT%H:%MZ)
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | .tag_name as $t | .assets[] | [$t, .name, .download_count] | @csv' \
+            | sed "s/^/$now,/" >> stats/downloads.csv
+          git add stats/downloads.csv
+          git commit -q -m "Download counts $now"
+          git push -q origin stats
