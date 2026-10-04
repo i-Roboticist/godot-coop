@@ -498,6 +498,24 @@ func end_session(reason := "The host ended the session.", immediate := false) ->
 		_set_state("ending", reason)
 
 
+## Stops everything right away, whatever the state: for when the editor or app is closing. It waits
+## for background work (a router lookup can take a few seconds), which must not outlive us.
+func shutdown() -> void:
+	if state == "ending":
+		_finish_end()
+	if rdv != null:
+		rdv.stop()
+		rdv = null
+	if _probe != null:
+		_probe.cleanup(true)
+		_probe = null
+	if _upnp_thread != null:
+		_upnp_thread.wait_to_finish()
+		_upnp_thread = null
+	if net != null:
+		net.stop()
+
+
 func _finish_end() -> void:
 	_end_at = 0
 	if files != null:

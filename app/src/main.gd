@@ -1683,4 +1683,6 @@ func _notification(what: int) -> void:
 	if what == NOTIFICATION_WM_CLOSE_REQUEST:
 		if join_session != null and join_session.state in ["connected", "connecting", "waiting_approval"]:
 			join_session.end_session("App closed", true)
+		if join_session != null:
+			join_session.shutdown()
 		_stop_relay()

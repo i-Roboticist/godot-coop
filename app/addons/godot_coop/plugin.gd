@@ -94,6 +94,8 @@ func _enter_tree() -> void:
 func _exit_tree() -> void:
 	if session != null and session.state in ["hosting", "connected", "reconnecting", "connecting", "waiting_approval"]:
 		session.end_session("%s closed their editor." % profile.get("name", "Someone"), true)
+	if session != null:
+		session.shutdown()
 	session = null
 	scene_sync.teardown()
 	script_sync.teardown()

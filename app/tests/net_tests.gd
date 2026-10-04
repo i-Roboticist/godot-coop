@@ -124,6 +124,7 @@ func _initialize() -> void:
 	check(read(dl_dir, "project.godot") == read(host_dir, "project.godot"), "download: project.godot included")
 	var token := dl._token
 	dl.leave()
+	dl.shutdown()
 	sessions.erase(dl)
 
 	# --- The editor reconnects with the companion's token: no second approval --------------------
@@ -439,6 +440,7 @@ func _initialize() -> void:
 	check(pump(6000, func(): return odd.state == "failed"), "version mismatch is refused")
 	check(not denials.is_empty() and denials[0].code == "version" and int(denials[0].need.minor) == Engine.get_version_info().minor, "refusal says which version is needed")
 	sessions.erase(odd)
+	odd.shutdown()
 
 	# --- Internet: an invite with no LAN address and no relay, so the joiner has to find the host
 	#     through the public rendezvous services, learn its addresses (STUN) and dial them --------
@@ -469,6 +471,7 @@ func _initialize() -> void:
 		far.leave()
 		pump(300)
 		sessions.erase(far)
+		far.shutdown()
 		var slot_closed := pump(50000, func(): return host.net.p2p_count() == 0)
 		var left := []
 		for sid in host.net._slots:
@@ -482,6 +485,9 @@ func _initialize() -> void:
 	host.end_session()
 	check(pump(3000, func(): return ed1.state == "ended"), "ending the session reaches joiners (%s: %s)" % [ed1.state, ed1.state_detail])
 	relay.stop()
+	# Background work (router lookups) must finish before the engine shuts down its sockets.
+	for s in sessions:
+		s.shutdown()
 	print("net tests: %d checks, %d failures" % [checks, failures])
 	quit(1 if failures > 0 else 0)
 

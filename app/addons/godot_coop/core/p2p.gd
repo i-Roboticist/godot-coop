@@ -171,7 +171,7 @@ static func _map_port(p: int, known) -> Dictionary:
 	var u: UPNP = known
 	if u == null:
 		u = UPNP.new()
-		if u.discover(1500, 2, "InternetGatewayDevice") != UPNP.UPNP_RESULT_SUCCESS:
+		if u.discover(1000, 2, "InternetGatewayDevice") != UPNP.UPNP_RESULT_SUCCESS:
 			return {"ok": false}
 		var gw := u.get_gateway()
 		if gw == null or not gw.is_valid_gateway():
